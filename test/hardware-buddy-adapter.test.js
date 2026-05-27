@@ -8,6 +8,8 @@ const path = require("node:path");
 const {
   createHardwareBuddyAdapter,
   isEnabledFromEnv,
+  sanitizeHardwareBuddyPayload,
+  buildSidecarSpawnOptions,
 } = require("../src/hardware-buddy-adapter");
 
 class FakeSidecarClient {
@@ -273,6 +275,28 @@ describe("hardware buddy adapter", () => {
     }), false);
   });
 
+  it("sanitizes unpaired surrogates in hardware payload strings", () => {
+    const sanitized = sanitizeHardwareBuddyPayload({
+      msg: "run \udcae now",
+      entries: ["ok \ud83d\ude80", "bad \udcad"],
+      prompt: { tool: "\udcaeBash", hint: "file \ud800" },
+    });
+
+    assert.deepStrictEqual(sanitized, {
+      msg: "run \ufffd now",
+      entries: ["ok \ud83d\ude80", "bad \ufffd"],
+      prompt: { tool: "\ufffdBash", hint: "file \ufffd" },
+    });
+  });
+
+  it("starts the Python sidecar with replacement stdout encoding", () => {
+    const env = buildSidecarSpawnOptions({ spawnOptions: { env: { EXTRA: "1" } } }, { PATH: "bin" }).env;
+
+    assert.strictEqual(env.PATH, "bin");
+    assert.strictEqual(env.EXTRA, "1");
+    assert.strictEqual(env.PYTHONIOENCODING, "utf-8:replace");
+  });
+
   it("does not load or start core modules when disabled", () => {
     resetFakes();
     const adapter = createHardwareBuddyAdapter({
@@ -395,6 +419,31 @@ describe("hardware buddy adapter", () => {
 
     sidecar.setSecure(false);
     assert.ok(!Object.prototype.hasOwnProperty.call(sidecar.lastSent().snapshot, "prompt"));
+    adapter.stop();
+  });
+
+  it("sanitizes prompt snapshots before writing to the sidecar transport", () => {
+    resetFakes();
+    const perm = { toolName: "Bash \udcae" };
+    const adapter = createHardwareBuddyAdapter({
+      env: { CLAWD_HARDWARE_BUDDY: "1" },
+      permissionsEnabled: true,
+      coreModules: {
+        HardwareBuddyController: PromptingHardwareBuddyController,
+        SidecarClient: FakeSidecarClient,
+      },
+      getPendingPermissions: () => [perm],
+      resolvePermissionEntry: () => {},
+    });
+
+    adapter.start();
+    const sidecar = FakeSidecarClient.instances[0];
+    sidecar.setConnected(true);
+    sidecar.setSecure(true);
+
+    assert.strictEqual(sidecar.lastSent().snapshot.msg, "approve: Bash \ufffd");
+    assert.strictEqual(sidecar.lastSent().snapshot.prompt.tool, "Bash \ufffd");
+    assert.doesNotMatch(JSON.stringify(sidecar.lastSent().snapshot), /\\udcae/i);
     adapter.stop();
   });
 

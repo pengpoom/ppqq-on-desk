@@ -94,6 +94,62 @@ function normalizeFallbackQuickCommand(input = {}) {
   };
 }
 
+function sanitizeUnicodeScalarString(value) {
+  if (typeof value !== "string") return value;
+  let changed = false;
+  let out = "";
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += value[i] + value[i + 1];
+        i += 1;
+      } else {
+        out += "\ufffd";
+        changed = true;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      out += "\ufffd";
+      changed = true;
+    } else {
+      out += value[i];
+    }
+  }
+  return changed ? out : value;
+}
+
+function sanitizeHardwareBuddyPayload(value, seen = new WeakMap()) {
+  if (typeof value === "string") return sanitizeUnicodeScalarString(value);
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    for (const item of value) out.push(sanitizeHardwareBuddyPayload(item, seen));
+    return out;
+  }
+
+  const out = {};
+  seen.set(value, out);
+  for (const [key, item] of Object.entries(value)) {
+    out[key] = sanitizeHardwareBuddyPayload(item, seen);
+  }
+  return out;
+}
+
+function wrapHardwareBuddyTransport(transport) {
+  if (!transport || typeof transport.send !== "function" || transport.__clawdSanitizedSend === true) return transport;
+  const rawSend = transport.send.bind(transport);
+  transport.send = (snapshot, meta) => rawSend(sanitizeHardwareBuddyPayload(snapshot), meta);
+  Object.defineProperty(transport, "__clawdSanitizedSend", {
+    value: true,
+    enumerable: false,
+  });
+  return transport;
+}
+
 class FallbackMemoryQuickCommandSink {
   constructor(options = {}) {
     this.maxRecords = Math.max(1, Math.floor(Number(options.maxRecords || 100)));
@@ -263,6 +319,22 @@ function buildSidecarArgs(options) {
     args.push("--fake-secure", String(env.CLAWD_HARDWARE_BUDDY_FAKE_SECURE).trim().toLowerCase());
   }
   return args;
+}
+
+function buildSidecarSpawnOptions(options = {}, env = process.env) {
+  const source = options.spawnOptions && typeof options.spawnOptions === "object"
+    ? { ...options.spawnOptions }
+    : {};
+  const sourceEnv = source.env && typeof source.env === "object" ? source.env : {};
+  return {
+    ...source,
+    env: {
+      ...process.env,
+      ...(env || {}),
+      ...sourceEnv,
+      PYTHONIOENCODING: "utf-8:replace",
+    },
+  };
 }
 
 function callSafely(fn, log) {
@@ -690,6 +762,7 @@ function createHardwareBuddyAdapter(options = {}) {
     return new SidecarClient({
       command: options.command || env.CLAWD_HARDWARE_BUDDY_PYTHON || "python",
       args: options.args || buildSidecarArgs({ env, coreRoot, config: activeConfig }),
+      spawnOptions: buildSidecarSpawnOptions(options, env),
       log: (level, message, meta) => {
         if (/^sidecar exited\b/.test(String(message || ""))) {
           handleIssue({ code: "SIDECAR_EXIT", message }, { restart: true });
@@ -784,6 +857,7 @@ function createHardwareBuddyAdapter(options = {}) {
       }
 
       sidecar = createSidecar(SidecarClient);
+      wrapHardwareBuddyTransport(sidecar && sidecar.transport);
       controller = createController(HardwareBuddyController);
 
       sidecar.start();
@@ -892,4 +966,6 @@ module.exports = {
   classifyHardwareBuddyIssue,
   readRuntimeConfig,
   hardwareBuddySettingsEqual,
+  sanitizeHardwareBuddyPayload,
+  buildSidecarSpawnOptions,
 };
