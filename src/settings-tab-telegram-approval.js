@@ -121,6 +121,7 @@
     const s = status && typeof status === "object" ? status : {};
     return [
       s.status || "",
+      s.transport || "",
       s.enabled === true ? "1" : "0",
       s.configured === true ? "1" : "0",
       s.reason || "",
@@ -190,8 +191,28 @@
     return s === "IDLE" || s === "NEEDS_SETUP" || s === "LEGACY_ACTIVE";
   }
 
+  function statusIndicatesNativeApprovalActive() {
+    const s = view.status || {};
+    return s.transport === "native"
+      && (s.enabled === true || s.status === "running" || s.status === "starting");
+  }
+
   function effectiveTelegramApprovalEnabled(cfg) {
-    return !!(cfg && cfg.enabled) || isNativeMigrationActive();
+    return !!(cfg && cfg.enabled) || isNativeMigrationActive() || statusIndicatesNativeApprovalActive();
+  }
+
+  function migrationSnapshotRenderKey(snapshot) {
+    const snap = snapshot && typeof snapshot === "object" ? snapshot : {};
+    const owner = snap.ownerSnapshot && typeof snap.ownerSnapshot === "object"
+      ? snap.ownerSnapshot
+      : {};
+    return [
+      snap.state || "",
+      snap.transport || "",
+      owner.nativePolling === true ? "1" : "0",
+      owner.sidecarRunning === true ? "1" : "0",
+      snap.nativeVerifiedAt || "",
+    ].join("\x1f");
   }
 
   function buildTelegramMigrationCard() {
@@ -208,8 +229,13 @@
     callCommand("telegramMigration.snapshot").then((res) => {
       if (seq !== migrationSnapshotSeq || migrationPending) return;
       if (res && res.status === "ok") {
+        const previousKey = migrationSnapshotRenderKey(migrationSnapshot);
         migrationSnapshot = res.snapshot;
         renderMigrationCard();
+        if (migrationSnapshotRenderKey(migrationSnapshot) !== previousKey
+          && state.activeTab === "telegram-approval") {
+          ops.requestRender({ content: true });
+        }
       }
     });
   }
@@ -721,7 +747,8 @@
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
     helpers.setSwitchVisual(sw, effectiveEnabled, { pending: view.configPending || migrationPending });
-    if (!ready || !migrationSnapshot || migrationPending) {
+    const canToggle = ready && !migrationPending && (effectiveEnabled || migrationSnapshot);
+    if (!canToggle) {
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
       sw.removeAttribute("tabindex");
@@ -743,7 +770,7 @@
           migrationDispatch("USER_DISABLE");
           return;
         }
-        if (canStartNativeFromSwitch()) {
+        if (migrationSnapshot && canStartNativeFromSwitch()) {
           ops.requestRender({ content: true });
           migrationDispatch("USER_TEST_NATIVE");
           return;

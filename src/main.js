@@ -1915,6 +1915,9 @@ async function sendTelegramApprovalTest() {
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
+    if (decision && (decision.action === "allow" || decision.action === "deny")) {
+      return { status: "ok", decision: decision.action };
+    }
     return { status: "error", message: "Telegram test did not receive a button response" };
   } finally {
     clearTimeout(timer);

@@ -1479,6 +1479,59 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("uses native running status while migration snapshot is still loading", async () => {
+    const commandCalls = [];
+    const never = new Promise(() => {});
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return never;
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "running",
+                transport: "native",
+                enabled: true,
+                configured: true,
+                tokenStored: true,
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const sw = harness.content.querySelector(".switch");
+    assert.equal(sw.getAttribute("aria-checked"), "true");
+    assert.equal(sw.classList.contains("disabled"), false);
+
+    sw.dispatchEvent({ type: "click" });
+
+    assert.ok(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_DISABLE"),
+      "turning off native-running approval should not wait for the migration snapshot",
+    );
+  });
+
   it("turning the Telegram approval switch on starts the native migration test", async () => {
     const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({

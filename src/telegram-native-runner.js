@@ -340,6 +340,9 @@ function createTelegramNativeRunner({
     const suggestions = normalizeApprovalSuggestions(payload && payload.suggestions);
     const signal = options && options.signal;
     if (!polling || !chatId || !text || (signal && signal.aborted)) {
+      const reason = !polling ? "not polling"
+        : (!chatId ? "missing chat" : (!text ? "missing text" : "aborted"));
+      log("debug", `native approval skipped: ${reason}`);
       return Promise.resolve(null);
     }
     const id = randomId();
@@ -383,6 +386,7 @@ function createTelegramNativeRunner({
       }).then((msg) => {
         const current = pendingApprovals.get(id);
         if (current) current.messageId = msg && msg.message_id;
+        log("debug", "native approval card sent");
       }).catch((err) => {
         log("warn", "native approval send failed", { error: err && err.message });
         finishApproval(id, null);
