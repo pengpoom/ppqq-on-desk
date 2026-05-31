@@ -63,6 +63,7 @@ let DISPLAY_HINT_MAP = {};
 // ── Session tracking ──
 const sessions = new Map();
 const MAX_SESSIONS = 20;
+const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
 let lastSessionSnapshotSignature = null;
 let lastSessionSnapshot = null;
@@ -70,6 +71,19 @@ let startupRecoveryActive = false;
 let startupRecoveryTimer = null;
 const STARTUP_RECOVERY_MAX_MS = 300000;
 const codexExitProbes = new Map();
+
+function normalizeAssistantOutput(value) {
+  if (typeof value !== "string") return null;
+  const text = value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+  if (!text) return null;
+  return text.length > ASSISTANT_OUTPUT_MAX
+    ? text.slice(0, ASSISTANT_OUTPUT_MAX)
+    : text;
+}
 
 // ── Hit-test bounding boxes (from theme) ──
 let HIT_BOXES = {};
@@ -867,6 +881,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     codexSource = null,
     displayHint = undefined,
     sessionTitle = null,
+    assistantLastOutput = null,
+    assistantLastOutputTruncated = false,
     permissionSuspect = false,
     preserveState = false,
     hookSource = null,
@@ -970,6 +986,8 @@ function updateSession(sessionId, state, event, opts = {}) {
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+  const srcAssistantLastOutput = normalizeAssistantOutput(assistantLastOutput);
+  const srcAssistantLastOutputTruncated = !!(srcAssistantLastOutput && assistantLastOutputTruncated === true);
   const srcResumeState = (existing && existing.resumeState) || null;
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
@@ -1024,7 +1042,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcLastStopAt = isStopBoundary
     ? Date.now()
     : (existing && Number.isFinite(existing.lastStopAt) ? existing.lastStopAt : null);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.

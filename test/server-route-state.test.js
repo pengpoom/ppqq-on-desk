@@ -145,11 +145,27 @@ describe("server-route-state POST", () => {
         codexSource: "vscode",
         displayHint: "display.svg",
         sessionTitle: "Work title",
+        assistantLastOutput: null,
+        assistantLastOutputTruncated: false,
         permissionSuspect: true,
         preserveState: true,
         hookSource: "codex-official",
       },
     ]]);
+  });
+
+  it("passes assistant last output metadata to updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "attention",
+      session_id: "sid",
+      event: "Stop",
+      assistant_last_output: "  Done.\nsecret=abc123  ",
+      assistant_last_output_truncated: true,
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutput, "Done.\nsecret=abc123");
+    assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutputTruncated, true);
   });
 
   it("uses basename for explicit svg state overrides", async () => {

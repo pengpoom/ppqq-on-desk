@@ -39,6 +39,7 @@ const LINUX_WINDOW_TYPE = "toolbar";
 // 24px matches the 8px stack margin on both edges plus a small buffer, so a
 // single tall bubble never hugs or exceeds the visible work area.
 const BUBBLE_HEIGHT_RESERVE = 24;
+const REMOTE_RICH_APPROVAL_AGENT_IDS = new Set(["claude-code", "codebuddy"]);
 
 function requiredDependency(value, name, owner) {
   if (!value) throw new Error(`${owner} requires ${name}`);
@@ -749,6 +750,11 @@ function compactRemoteApprovalText(value, maxLen = 200) {
   return text;
 }
 
+function isRemoteRichApprovalSupported(permEntry) {
+  const agentId = compactRemoteApprovalText(permEntry && permEntry.agentId ? permEntry.agentId : "claude-code", 80);
+  return REMOTE_RICH_APPROVAL_AGENT_IDS.has(agentId);
+}
+
 function isRemoteApprovalActionable(permEntry) {
   if (!permEntry || typeof permEntry !== "object") return false;
   if (permEntry.isElicitation || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isOpencode || permEntry.isAntigravity) return false;
@@ -784,6 +790,40 @@ function buildRemoteApprovalSummary(permEntry) {
   return null;
 }
 
+function buildRemoteSuggestionLabel(suggestion) {
+  if (!suggestion || typeof suggestion !== "object") return "";
+  if (suggestion.type === "setMode") {
+    if (suggestion.mode === "acceptEdits") return "Auto edits";
+    if (suggestion.mode === "plan") return "Plan mode";
+    const mode = compactRemoteApprovalText(suggestion.mode || "", 18);
+    return mode ? `Mode: ${mode}` : "";
+  }
+  if (suggestion.type === "addRules") {
+    const rules = Array.isArray(suggestion.rules) ? suggestion.rules : [suggestion];
+    const first = rules.find((rule) => rule && typeof rule === "object") || {};
+    const behavior = compactRemoteApprovalText(suggestion.behavior || first.behavior || "allow", 12);
+    const isDeny = behavior === "deny";
+    const toolName = compactRemoteApprovalText(first.toolName || suggestion.toolName || "", 16);
+    if (toolName) return isDeny ? `Always deny ${toolName}` : `Always ${toolName}`;
+    return isDeny ? "Always deny" : "Always allow";
+  }
+  return "";
+}
+
+function buildRemoteSuggestionButtons(permEntry) {
+  if (!isRemoteRichApprovalSupported(permEntry)) return [];
+  const suggestions = Array.isArray(permEntry.suggestions) ? permEntry.suggestions : [];
+  const seen = new Set();
+  const buttons = [];
+  suggestions.forEach((suggestion, index) => {
+    const label = compactRemoteApprovalText(buildRemoteSuggestionLabel(suggestion), 28);
+    if (!label || seen.has(label)) return;
+    seen.add(label);
+    buttons.push({ index, label });
+  });
+  return buttons;
+}
+
 // Returns the Telegram approval payload, or null when there is no safe summary
 // to ship. Callers must treat null as a no-op signal — never send a card
 // without an action-describing summary.
@@ -807,10 +847,25 @@ function buildRemoteApprovalPayload(permEntry) {
     sessionFolder ? `Folder: ${sessionFolder}` : null,
     `Summary: ${summary}`,
   ].filter(Boolean).join("\n");
-  return {
+  const suggestionButtons = buildRemoteSuggestionButtons(permEntry);
+  const payload = {
     title: `${agentId} requests ${toolName}`,
     detail,
   };
+  if (suggestionButtons.length > 0) payload.suggestions = suggestionButtons;
+  return payload;
+}
+
+function normalizeRemoteApprovalDecision(decision) {
+  if (decision === "allow" || decision === "deny") return { action: decision };
+  if (!decision || typeof decision !== "object") return null;
+  const action = decision.action === "allow" || decision.decision === "allow" ? "allow"
+    : (decision.action === "deny" || decision.decision === "deny" ? "deny"
+      : (decision.action === "suggestion" ? "suggestion" : null));
+  if (!action) return null;
+  if (action !== "suggestion") return { action };
+  const index = Number(decision.index);
+  return Number.isInteger(index) && index >= 0 ? { action, index } : null;
 }
 
 function getTelegramApprovalClient() {
@@ -885,11 +940,25 @@ function maybeStartRemoteApproval(permEntry) {
 
   Promise.resolve(request)
     .then((decision) => {
-      if (decision !== "allow" && decision !== "deny") {
+      const normalized = normalizeRemoteApprovalDecision(decision);
+      if (!normalized) {
         if (decision) permLog(`telegram remote approval ignored decision=${compactRemoteApprovalText(decision, 40)}`);
         return;
       }
-      resolvePermissionEntry(permEntry, decision);
+      if (pendingPermissions.indexOf(permEntry) === -1) return;
+      if (normalized.action === "allow" || normalized.action === "deny") {
+        resolvePermissionEntry(permEntry, normalized.action);
+        return;
+      }
+      if (!isRemoteRichApprovalSupported(permEntry)) {
+        permLog(`telegram remote approval ignored rich decision for agent=${compactRemoteApprovalText(permEntry.agentId || "unknown", 80)}`);
+        return;
+      }
+      if (!applyPermissionSuggestion(permEntry, normalized.index, { requireResolved: true })) {
+        permLog(`telegram remote approval ignored invalid suggestion index=${normalized.index}`);
+        return;
+      }
+      resolvePermissionEntry(permEntry, "allow");
     })
     .catch((err) => {
       permLog(`telegram remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
@@ -900,6 +969,32 @@ function maybeStartRemoteApproval(permEntry) {
       }
     });
   return true;
+}
+
+function applyPermissionSuggestion(perm, index, options = {}) {
+  const suggestion = perm && Array.isArray(perm.suggestions) ? perm.suggestions[index] : null;
+  if (!suggestion) return false;
+  permLog(`suggestion raw: ${JSON.stringify(suggestion)}`);
+  let resolved = false;
+  if (suggestion.type === "addRules") {
+    const rules = Array.isArray(suggestion.rules) ? suggestion.rules
+      : [{ toolName: suggestion.toolName, ruleContent: suggestion.ruleContent }];
+    perm.resolvedSuggestion = {
+      type: "addRules",
+      destination: suggestion.destination || "localSettings",
+      behavior: suggestion.behavior || "allow",
+      rules,
+    };
+    resolved = true;
+  } else if (suggestion.type === "setMode") {
+    perm.resolvedSuggestion = {
+      type: "setMode",
+      mode: suggestion.mode,
+      destination: suggestion.destination || "localSettings",
+    };
+    resolved = true;
+  }
+  return resolved || !options.requireResolved;
 }
 
   function resolvePermissionEntry(permEntry, behavior, message) {
@@ -1268,25 +1363,7 @@ function handleDecide(event, behavior) {
   // "suggestion:N" — user picked a permission suggestion
   if (typeof behavior === "string" && behavior.startsWith("suggestion:")) {
     const idx = parseInt(behavior.split(":")[1], 10);
-    const suggestion = perm.suggestions?.[idx];
-    if (!suggestion) { resolvePermissionEntry(perm, "deny", "Invalid suggestion index"); return; }
-    permLog(`suggestion raw: ${JSON.stringify(suggestion)}`);
-    if (suggestion.type === "addRules") {
-      const rules = Array.isArray(suggestion.rules) ? suggestion.rules
-        : [{ toolName: suggestion.toolName, ruleContent: suggestion.ruleContent }];
-      perm.resolvedSuggestion = {
-        type: "addRules",
-        destination: suggestion.destination || "localSettings",
-        behavior: suggestion.behavior || "allow",
-        rules,
-      };
-    } else if (suggestion.type === "setMode") {
-      perm.resolvedSuggestion = {
-        type: "setMode",
-        mode: suggestion.mode,
-        destination: suggestion.destination || "localSettings",
-      };
-    }
+    if (!applyPermissionSuggestion(perm, idx)) { resolvePermissionEntry(perm, "deny", "Invalid suggestion index"); return; }
     resolvePermissionEntry(perm, "allow");
   } else if (behavior === "deny-and-focus") {
     dismissPermissionForTerminal(perm);

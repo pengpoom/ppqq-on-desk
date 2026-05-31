@@ -15,6 +15,7 @@ const { resolveCodexOfficialHookState } = require("./server-codex-official-turns
 // (session_title) headroom on top of cwd / pid_chain / host / etc. Still a
 // local-only 127.0.0.1 endpoint - not an Internet DoS concern.
 const MAX_STATE_BODY_BYTES = 4096;
+const ASSISTANT_LAST_OUTPUT_MAX = 2400;
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -25,6 +26,19 @@ function normalizeHwndString(value) {
   } catch {
     return null;
   }
+}
+
+function normalizeAssistantLastOutput(value) {
+  if (typeof value !== "string") return null;
+  const text = value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+  if (!text) return null;
+  return text.length > ASSISTANT_LAST_OUTPUT_MAX
+    ? text.slice(0, ASSISTANT_LAST_OUTPUT_MAX)
+    : text;
 }
 
 function sendStateHealthResponse(res, options) {
@@ -104,6 +118,8 @@ function handleStatePost(req, res, options) {
       // "ignore + fall back" pattern used by cwd / agent_id above.
       const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
       const sessionTitle = rawTitle || null;
+      const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
+      const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
       const permissionSuspect = data.permission_suspect === true;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
@@ -182,6 +198,8 @@ function handleStatePost(req, res, options) {
             codexSource,
             displayHint: display_svg,
             sessionTitle,
+            assistantLastOutput,
+            assistantLastOutputTruncated,
             permissionSuspect,
             preserveState,
             hookSource,

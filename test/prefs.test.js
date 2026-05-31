@@ -65,6 +65,8 @@ describe("prefs.getDefaults", () => {
       enabled: false,
       allowedTgUserId: "",
       targetSessionKey: "",
+      notifyOnComplete: false,
+      completionOutputMode: "full",
     });
   });
 
@@ -260,6 +262,8 @@ describe("prefs.validate", () => {
       enabled: true,
       allowedTgUserId: "123456789",
       targetSessionKey: "telegram:987654321",
+      notifyOnComplete: false,
+      completionOutputMode: "full",
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(v.tgApproval, "botToken"), false);
   });
@@ -804,6 +808,40 @@ describe("prefs.migrate v6 → v7 (Codex Native prompt sound default)", () => {
     });
     assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.agents.codex.nativeNotificationSoundEnabled, false);
+  });
+});
+
+describe("prefs.migrate v7 → v8 (Telegram bare completion default)", () => {
+  it("turns old persisted bare completion pings off", () => {
+    const upgraded = prefs.migrate({
+      version: 7,
+      tgApproval: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        notifyOnComplete: true,
+        completionOutputMode: "full",
+      },
+    });
+    const validated = prefs.validate(upgraded);
+
+    assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(validated.tgApproval.notifyOnComplete, false);
+    assert.strictEqual(validated.tgApproval.completionOutputMode, "full");
+    assert.strictEqual(validated.tgApproval.enabled, true);
+  });
+
+  it("migrates older prefs without Telegram approval settings safely", () => {
+    const upgraded = prefs.migrate({
+      version: 6,
+      lang: "zh",
+    });
+    const validated = prefs.validate(upgraded);
+
+    assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(validated.lang, "zh");
+    assert.strictEqual(validated.tgApproval.notifyOnComplete, false);
+    assert.strictEqual(validated.tgApproval.completionOutputMode, "full");
   });
 });
 

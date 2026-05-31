@@ -6,11 +6,20 @@ const DEFAULT_TG_APPROVAL = Object.freeze({
   enabled: false,
   allowedTgUserId: "",
   targetSessionKey: "",
+  // R1a bare ping gate: when false, Clawd will not send a "finished" message
+  // unless there is assistant output to include. Native-only (legacy sidecar
+  // users silently lack it — see getTelegramCompanionClient in main.js).
+  notifyOnComplete: false,
+  // R1b default: send the assistant's final text when available. If the
+  // extractor has no text and notifyOnComplete is false, no bare fallback ping
+  // is sent.
+  completionOutputMode: "full",
 });
 
 const BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]{30,}$/;
 const TELEGRAM_USER_ID_RE = /^[1-9]\d{4,19}$/;
 const TELEGRAM_SESSION_KEY_RE = /^telegram:-?[1-9]\d{4,19}(?::\d{1,20}){0,2}$/;
+const COMPLETION_OUTPUT_MODES = Object.freeze(["off", "full"]);
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -36,6 +45,13 @@ function normalizeTelegramSessionKey(value) {
   return TELEGRAM_SESSION_KEY_RE.test(key) ? key : "";
 }
 
+function normalizeCompletionOutputMode(value, fallback = DEFAULT_TG_APPROVAL.completionOutputMode) {
+  const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (mode === "tail") return "full";
+  if (COMPLETION_OUTPUT_MODES.includes(mode)) return mode;
+  return COMPLETION_OUTPUT_MODES.includes(fallback) ? fallback : DEFAULT_TG_APPROVAL.completionOutputMode;
+}
+
 function isValidTelegramSessionKey(value) {
   return TELEGRAM_SESSION_KEY_RE.test(String(value || "").trim());
 }
@@ -46,9 +62,15 @@ function normalizeTelegramApproval(value, defaultsValue = DEFAULT_TG_APPROVAL) {
     enabled: defaults.enabled === true,
     allowedTgUserId: trimString(defaults.allowedTgUserId, 64),
     targetSessionKey: normalizeTelegramSessionKey(defaults.targetSessionKey),
+    notifyOnComplete: defaults.notifyOnComplete === true,
+    completionOutputMode: normalizeCompletionOutputMode(defaults.completionOutputMode),
   };
   if (!isPlainObject(value)) return out;
   if (typeof value.enabled === "boolean") out.enabled = value.enabled;
+  if (typeof value.notifyOnComplete === "boolean") out.notifyOnComplete = value.notifyOnComplete;
+  if (typeof value.completionOutputMode === "string") {
+    out.completionOutputMode = normalizeCompletionOutputMode(value.completionOutputMode, out.completionOutputMode);
+  }
   if (typeof value.allowedTgUserId === "string") {
     const candidate = trimString(value.allowedTgUserId, 64);
     out.allowedTgUserId = isValidTelegramUserId(candidate) ? candidate : "";
@@ -64,12 +86,23 @@ function validateTelegramApproval(value) {
     return { status: "error", message: "tgApproval must be a plain object" };
   }
   for (const key of Object.keys(value)) {
-    if (key !== "enabled" && key !== "allowedTgUserId" && key !== "targetSessionKey") {
+    if (key !== "enabled" && key !== "allowedTgUserId" && key !== "targetSessionKey"
+      && key !== "notifyOnComplete" && key !== "completionOutputMode") {
       return { status: "error", message: `tgApproval.${key} is not supported` };
     }
   }
   if (typeof value.enabled !== "boolean") {
     return { status: "error", message: "tgApproval.enabled must be a boolean" };
+  }
+  if (value.notifyOnComplete !== undefined && typeof value.notifyOnComplete !== "boolean") {
+    return { status: "error", message: "tgApproval.notifyOnComplete must be a boolean" };
+  }
+  if (
+    value.completionOutputMode !== undefined
+    && (typeof value.completionOutputMode !== "string"
+      || !COMPLETION_OUTPUT_MODES.includes(value.completionOutputMode))
+  ) {
+    return { status: "error", message: "tgApproval.completionOutputMode must be off|full" };
   }
   const allowed = trimString(value.allowedTgUserId, 64);
   if (allowed && !isValidTelegramUserId(allowed)) {
@@ -303,8 +336,10 @@ module.exports = {
   BOT_TOKEN_RE,
   TELEGRAM_USER_ID_RE,
   TELEGRAM_SESSION_KEY_RE,
+  COMPLETION_OUTPUT_MODES,
   cloneDefaultTelegramApproval,
   normalizeTelegramApproval,
+  normalizeCompletionOutputMode,
   validateTelegramApproval,
   validateTelegramBotToken,
   normalizeTelegramSessionKey,

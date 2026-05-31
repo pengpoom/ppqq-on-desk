@@ -192,6 +192,19 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").codexSource, "vscode");
   });
 
+  it("exposes assistant last output for completion companion consumers", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["done", session("idle", {
+        assistantLastOutput: "Final assistant text",
+        assistantLastOutputTruncated: true,
+        recentEvents: [{ event: "Stop", state: "attention", at: 1 }],
+      })],
+    ]));
+    const entry = snapshot.sessions.find((s) => s.id === "done");
+    assert.strictEqual(entry.assistantLastOutput, "Final assistant text");
+    assert.strictEqual(entry.assistantLastOutputTruncated, true);
+  });
+
   it("does not expose focus targets for sessions hidden from the focusable UI surface", () => {
     const hiddenEndedSession = session("idle", {
       sourcePid: 123,

@@ -38,7 +38,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 7;
+const CURRENT_VERSION = 8;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -452,6 +452,15 @@ function migrate(raw) {
       }
     }
     out.version = 7;
+  }
+  // v7 -> v8: bare Telegram completion pings now default off. There was no
+  // UI for this flag, so a persisted true is overwhelmingly the old default
+  // rather than an explicit user opt-in.
+  if (out.version < 8) {
+    if (out.tgApproval && typeof out.tgApproval === "object") {
+      out.tgApproval.notifyOnComplete = false;
+    }
+    out.version = 8;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

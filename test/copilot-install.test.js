@@ -11,6 +11,7 @@ const {
   registerCopilotHooks,
   resolveCopilotHome,
   resolveCopilotHooksPath,
+  unregisterCopilotHooks,
 } = require("../hooks/copilot-install");
 
 const MARKER = "copilot-hook.js";
@@ -36,6 +37,10 @@ function makeTempHomeWithoutCopilot() {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function listCleanupBackups(dir) {
+  return fs.readdirSync(dir).filter((name) => name.includes(".clawd-cleanup-") && name.endsWith(".bak"));
 }
 
 afterEach(() => {
@@ -553,5 +558,55 @@ describe("registerCopilotHooks", () => {
 
     assert.deepStrictEqual(result, { added: 0, updated: 0, skipped: 0, configChanged: false });
     assert.strictEqual(fs.existsSync(nonexistent), false);
+  });
+
+  it("unregister removes stale Clawd markers from any Copilot event", () => {
+    const { homeDir, hooksPath } = makeTempHomeWithCopilot({
+      version: 1,
+      hooks: {
+        permissionRequest: [
+          {
+            type: "command",
+            bash: '"node" "/x/copilot-hook.js" "permissionRequest"',
+            powershell: '& "node" "/x/copilot-hook.js" "permissionRequest"',
+            timeoutSec: 600,
+          },
+          {
+            type: "command",
+            bash: '"node" "/user/keep.js" "permissionRequest"',
+            powershell: '& "node" "/user/keep.js" "permissionRequest"',
+            timeoutSec: 600,
+          },
+        ],
+        sessionStart: [
+          {
+            type: "command",
+            bash: '"node" "/x/copilot-hook.js" "sessionStart"',
+            powershell: '& "node" "/x/copilot-hook.js" "sessionStart"',
+            timeoutSec: TIMEOUT_SEC,
+          },
+        ],
+        userPromptSubmitted: [
+          {
+            type: "command",
+            bash: '"node" "/user/keep.js" "userPromptSubmitted"',
+            powershell: '& "node" "/user/keep.js" "userPromptSubmitted"',
+            timeoutSec: TIMEOUT_SEC,
+          },
+        ],
+      },
+    });
+
+    const result = unregisterCopilotHooks({ silent: true, homeDir, backup: true });
+    const settings = readJson(hooksPath);
+
+    assert.strictEqual(result.removed, 2);
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(settings.hooks.sessionStart, undefined);
+    assert.strictEqual(settings.hooks.permissionRequest.length, 1);
+    assert.ok(settings.hooks.permissionRequest[0].bash.includes("/user/keep.js"));
+    assert.strictEqual(settings.hooks.userPromptSubmitted.length, 1);
+    assert.ok(settings.hooks.userPromptSubmitted[0].bash.includes("/user/keep.js"));
+    assert.strictEqual(listCleanupBackups(path.dirname(hooksPath)).length, 1);
   });
 });

@@ -16,7 +16,12 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { writeJsonAtomic, asarUnpackedPath } = require("./json-utils");
+const {
+  readJsonFile,
+  writeJsonAtomic,
+  writeJsonAtomicWithBackup,
+  asarUnpackedPath,
+} = require("./json-utils");
 const { resolveNodeBin } = require("./server-config");
 
 const MARKER = "copilot-hook.js";
@@ -156,7 +161,7 @@ function registerCopilotHooks(options = {}) {
 
   let settings = {};
   try {
-    settings = JSON.parse(fs.readFileSync(hooksPath, "utf-8"));
+    settings = readJsonFile(hooksPath);
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read hooks.json: ${err.message}`);
@@ -212,6 +217,43 @@ function registerCopilotHooks(options = {}) {
   return { added, updated, skipped, configChanged: changed };
 }
 
+function unregisterCopilotHooks(options = {}) {
+  const copilotDir = resolveCopilotHome(options);
+  const hooksPath = options.hooksPath || path.join(copilotDir, "hooks", "hooks.json");
+
+  let settings = {};
+  try {
+    settings = readJsonFile(hooksPath);
+  } catch (err) {
+    if (err.code === "ENOENT") return { removed: 0, changed: false, configChanged: false, hooksPath };
+    throw new Error(`Failed to read hooks.json: ${err.message}`);
+  }
+
+  if (!settings.hooks || typeof settings.hooks !== "object") {
+    return { removed: 0, changed: false, configChanged: false, hooksPath };
+  }
+
+  let removed = 0;
+  let changed = false;
+  for (const event of Object.keys(settings.hooks)) {
+    const entries = settings.hooks[event];
+    if (!Array.isArray(entries)) continue;
+    const next = entries.filter((entry) => !entryHasMarker(entry));
+    if (next.length === entries.length) continue;
+    removed += entries.length - next.length;
+    changed = true;
+    if (next.length > 0) settings.hooks[event] = next;
+    else delete settings.hooks[event];
+  }
+
+  let backupPath = null;
+  if (changed) backupPath = writeJsonAtomicWithBackup(hooksPath, settings, options);
+  if (!options.silent) console.log(`Clawd Copilot hooks removed: ${removed}`);
+  const result = { removed, changed, configChanged: changed, hooksPath };
+  if (options.backup === true) result.backupPath = backupPath;
+  return result;
+}
+
 module.exports = {
   MARKER,
   COPILOT_HOOK_EVENTS,
@@ -222,6 +264,7 @@ module.exports = {
   buildCopilotHookCommands,
   buildCopilotHookEntry,
   registerCopilotHooks,
+  unregisterCopilotHooks,
 };
 
 // Lazy-getter exports for back-compat — values reflect current env at access time.
@@ -237,7 +280,8 @@ Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
 // CLI: `node hooks/copilot-install.js [--remote]`.
 if (require.main === module) {
   try {
-    registerCopilotHooks({ remote: process.argv.includes("--remote") });
+    if (process.argv.includes("--uninstall")) unregisterCopilotHooks({});
+    else registerCopilotHooks({ remote: process.argv.includes("--remote") });
   } catch (err) {
     console.error(err.message);
     process.exit(1);

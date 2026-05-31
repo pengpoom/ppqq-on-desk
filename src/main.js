@@ -18,6 +18,12 @@ const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const {
+  buildTelegramApprovalStatus,
+  isNativeTelegramApprovalSelected,
+  buildTelegramStatusDiagnostic,
+  formatTelegramStatusDiagnostic,
+} = require("./telegram-approval-runtime-status");
 const { createTelegramMigrationController } = require("./telegram-migration-controller");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
@@ -219,6 +225,7 @@ let telegramApprovalConfigSignature = "";
 let telegramApprovalTokenRevision = 0;
 let _telegramMigrationController = null;
 let telegramNativeRunner = null;
+let telegramCompanion = null;
 let suppressTelegramApprovalSidecarSync = 0;
 let hardwareBuddyAdapter = null;
 let hardwareBuddyStatus = null;
@@ -248,6 +255,10 @@ const _settingsController = createSettingsController({
     repairIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
+    cleanupIntegrations: (options = {}) => {
+      const { cleanupIntegrations } = require("../hooks/cleanup-integrations.js");
+      return cleanupIntegrations({ ...options, backup: true, silent: true });
+    },
     repairLocalServer: () => _server && typeof _server.repairRuntimeStatus === "function"
       ? _server.repairRuntimeStatus()
       : false,
@@ -1128,6 +1139,11 @@ const _stateCtx = {
     broadcastSessionHudSnapshot(snapshot);
     repositionFloatingBubbles();
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyStateChanged();
+    // R1a: best-effort completion notifications. Must never throw or block the
+    // broadcast — the companion computes synchronously and fires sends async.
+    if (telegramCompanion) {
+      try { telegramCompanion.onSnapshot(snapshot); } catch {}
+    }
   },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
@@ -1402,14 +1418,36 @@ function getTelegramApprovalClient() {
   const controller = _telegramMigrationController;
   if (controller && typeof controller.getSnapshot === "function") {
     const snap = controller.getSnapshot() || {};
-    if (snap.state === "NATIVE_ACTIVE"
-      && telegramNativeRunner
-      && typeof telegramNativeRunner.requestApproval === "function") {
-      return telegramNativeRunner;
+    if (isNativeTelegramApprovalSelected(snap)) {
+      if (snap.state === "NATIVE_ACTIVE"
+        && telegramNativeRunner
+        && typeof telegramNativeRunner.isPolling === "function"
+        && telegramNativeRunner.isPolling()
+        && typeof telegramNativeRunner.requestApproval === "function") {
+        return telegramNativeRunner;
+      }
+      return null;
     }
   }
   if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
   return telegramApprovalSidecar.getClient();
+}
+
+// R1a companion notifications are native-only: the legacy sidecar has no
+// sendNotification surface, so legacy users silently lack completion pings
+// (Settings copy must say so — tracked for a follow-up UI pass). Unlike
+// getTelegramApprovalClient this never falls back to the sidecar.
+function getTelegramCompanionClient() {
+  const controller = _telegramMigrationController;
+  if (controller && typeof controller.getSnapshot === "function") {
+    const snap = controller.getSnapshot() || {};
+    if (snap.state === "NATIVE_ACTIVE"
+      && telegramNativeRunner
+      && typeof telegramNativeRunner.sendNotification === "function") {
+      return telegramNativeRunner;
+    }
+  }
+  return null;
 }
 
 function telegramApprovalLog(level, message, meta = {}) {
@@ -1539,18 +1577,90 @@ function buildTelegramApprovalSignature(config, paths, tokenStatus) {
 function getTelegramApprovalStatus() {
   const config = getTelegramApprovalPrefs();
   const token = getTelegramApprovalTokenStatus();
-  const ready = telegramApprovalSettings.readiness(config, token);
   const sidecarStatus = telegramApprovalSidecar && typeof telegramApprovalSidecar.getStatus === "function"
     ? telegramApprovalSidecar.getStatus()
     : { status: "stopped" };
+  const migrationSnapshot = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
+    ? _telegramMigrationController.getSnapshot()
+    : null;
+  const nativePolling = telegramNativeRunner
+    && typeof telegramNativeRunner.isPolling === "function"
+    && telegramNativeRunner.isPolling();
+  return buildTelegramApprovalStatus({
+    config,
+    token,
+    sidecarStatus,
+    migrationSnapshot,
+    nativePolling,
+  });
+}
+
+function getPendingTelegramApprovalCount() {
+  return pendingPermissions.filter((entry) =>
+    entry
+    && !entry.isCodexNotify
+    && !entry.isKimiNotify
+    && !entry.isHardwareBuddyTest
+  ).length;
+}
+
+function getTelegramNativeRunnerStatus() {
+  if (telegramNativeRunner && typeof telegramNativeRunner.getStatus === "function") {
+    try { return telegramNativeRunner.getStatus(); } catch {}
+  }
   return {
-    ...sidecarStatus,
-    enabled: config.enabled === true,
-    configured: ready.ready === true,
-    reason: ready.reason || "",
-    message: sidecarStatus.message || ready.message || "",
-    tokenStored: token.tokenStored === true,
+    polling: !!(telegramNativeRunner
+      && typeof telegramNativeRunner.isPolling === "function"
+      && telegramNativeRunner.isPolling()),
+    pendingApprovalCount: telegramNativeRunner && telegramNativeRunner._pendingApprovals
+      ? telegramNativeRunner._pendingApprovals.size
+      : 0,
+    lastError: null,
   };
+}
+
+function buildTelegramStatusCommandText(options = {}) {
+  const config = getTelegramApprovalPrefs();
+  const token = getTelegramApprovalTokenStatus();
+  const sidecarStatus = telegramApprovalSidecar && typeof telegramApprovalSidecar.getStatus === "function"
+    ? telegramApprovalSidecar.getStatus()
+    : { status: "stopped" };
+  const migrationSnapshot = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
+    ? _telegramMigrationController.getSnapshot()
+    : null;
+  const nativeRunnerStatus = getTelegramNativeRunnerStatus();
+  const nativePolling = nativeRunnerStatus && nativeRunnerStatus.polling === true;
+  const approvalStatus = buildTelegramApprovalStatus({
+    config,
+    token,
+    sidecarStatus,
+    migrationSnapshot,
+    nativePolling,
+  });
+  const sessionSnapshot = _state && typeof _state.buildSessionSnapshot === "function"
+    ? _state.buildSessionSnapshot()
+    : null;
+  const diagnostic = buildTelegramStatusDiagnostic({
+    config,
+    token,
+    approvalStatus,
+    migrationSnapshot,
+    nativeRunnerStatus,
+    nativePolling,
+    pendingApprovalCount: getPendingTelegramApprovalCount(),
+    sessionSnapshot,
+    now: Date.now(),
+    all: options && options.all === true,
+  });
+  return formatTelegramStatusDiagnostic(diagnostic, {
+    all: options && options.all === true,
+    lang: _settingsController.get("lang") || lang || "en",
+  });
+}
+
+function handleTelegramNativeCommand({ command, args } = {}) {
+  if (command !== "status") return null;
+  return buildTelegramStatusCommandText({ all: true });
 }
 
 function writeTelegramApprovalToken(token) {
@@ -1724,9 +1834,32 @@ async function initTelegramMigrationController() {
       const cfg = getTelegramApprovalPrefs();
       return (cfg && cfg.allowedTgUserId) || "";
     },
+    isCommandEnabled: () => {
+      const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
+        ? _telegramMigrationController.getSnapshot()
+        : null;
+      return !!(snap && snap.state === "NATIVE_ACTIVE");
+    },
+    onCommand: (payload) => handleTelegramNativeCommand(payload),
     log: telegramApprovalLog,
   });
   telegramNativeRunner = nativeRunner;
+
+  // R1a: completion notifications ride the existing snapshot fanout. The
+  // companion holds its own dedupe state (the snapshot carries no prev) and
+  // only sends while native is the active owner + the user left the toggle on.
+  const { createTelegramCompanion } = require("./telegram-companion");
+  telegramCompanion = createTelegramCompanion({
+    getClient: () => getTelegramCompanionClient(),
+    getLang: () => _settingsController.get("lang") || lang || "en",
+    getCompletionOutputMode: () => getTelegramApprovalPrefs().completionOutputMode || "full",
+    getNotifyOnComplete: () => getTelegramApprovalPrefs().notifyOnComplete === true,
+    // Native-active client present. The companion still advances its dedupe map
+    // while native is inactive, and internally decides whether to send a bare
+    // ping or require assistant output based on tgApproval prefs.
+    isEnabled: () => !!getTelegramCompanionClient(),
+    log: telegramApprovalLog,
+  });
 
   _telegramMigrationController = createTelegramMigrationController({
     sidecar: sidecarHandle,
@@ -1833,6 +1966,9 @@ function telegramApprovalUnavailableMessage(status) {
   if (status && status.reason === "disabled") return "Telegram approval is disabled";
   if (status && status.reason === "missing-token") return "Telegram bot token is not configured";
   if (status && status.reason === "invalid-config") return "Telegram approval config is incomplete";
+  if (status && status.reason === "native-inactive") return "Native Telegram approval is not active";
+  if (status && status.reason === "native-testing") return "Native Telegram approval test is already in progress";
+  if (status && status.transport === "native") return "Native Telegram approval is not active";
   return "Telegram approval sidecar is not running";
 }
 
@@ -1841,7 +1977,9 @@ async function sendTelegramApprovalTest() {
   if (beforeStatus.configured !== true) {
     return { status: "error", message: telegramApprovalUnavailableMessage(beforeStatus) };
   }
-  await queueTelegramApprovalSidecarSync("test");
+  if (!(beforeStatus && beforeStatus.transport === "native")) {
+    await queueTelegramApprovalSidecarSync("test");
+  }
   const client = getTelegramApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
     return { status: "error", message: telegramApprovalUnavailableMessage(getTelegramApprovalStatus()) };
@@ -1855,6 +1993,9 @@ async function sendTelegramApprovalTest() {
     }, { signal: controller.signal });
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
+    }
+    if (decision && (decision.action === "allow" || decision.action === "deny")) {
+      return { status: "ok", decision: decision.action };
     }
     return { status: "error", message: "Telegram test did not receive a button response" };
   } finally {

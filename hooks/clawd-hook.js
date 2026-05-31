@@ -9,6 +9,7 @@ const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
+const ASSISTANT_OUTPUT_MAX = 2200;
 // Observed in Claude Code 2.1.150 StopFailure hook schema (tyq enum).
 // Unknown values from future versions fall back to "unknown".
 const API_ERROR_TYPES = new Set([
@@ -31,6 +32,7 @@ const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
 const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
 const TOOL_MATCH_DEPTH_MAX = 6;
+const ASSISTANT_OUTPUT_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001F\u007F-\u009F]+/g;
 
 function normalizeTitle(value) {
   if (typeof value !== "string") return null;
@@ -124,6 +126,103 @@ function extractSessionTitleFromEntries(entries) {
 
 function extractSessionTitleFromTranscript(transcriptPath) {
   return extractSessionTitleFromEntries(readTranscriptTailEntries(transcriptPath));
+}
+
+function normalizeAssistantOutputText(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(ASSISTANT_OUTPUT_CONTROL_RE, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+}
+
+function clampAssistantOutputText(text, maxLen = ASSISTANT_OUTPUT_MAX) {
+  const normalized = normalizeAssistantOutputText(text);
+  const max = Number.isInteger(maxLen) && maxLen > 0 ? maxLen : ASSISTANT_OUTPUT_MAX;
+  if (!normalized) return null;
+  if (normalized.length <= max) return { text: normalized, truncated: false };
+
+  const marker = "\n...[truncated]...\n";
+  if (max <= marker.length + 20) {
+    return { text: normalized.slice(Math.max(0, normalized.length - max)), truncated: true };
+  }
+  const keep = max - marker.length;
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return {
+    text: `${normalized.slice(0, head)}${marker}${normalized.slice(normalized.length - tail)}`,
+    truncated: true,
+  };
+}
+
+function assistantEntryMatchesSession(entry, sessionId) {
+  if (!sessionId) return true;
+  if (!entry || typeof entry !== "object") return false;
+  return !entry.sessionId || entry.sessionId === sessionId;
+}
+
+function assistantEntryLooksSubagent(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  return entry.isSidechain === true
+    || entry.isSubagent === true
+    || entry.is_subagent === true
+    || entry.subagent === true;
+}
+
+function assistantEntryIsTurnBoundary(entry, sessionId) {
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.type !== "user") return false;
+  return assistantEntryMatchesSession(entry, sessionId);
+}
+
+function assistantTextPartsFromContent(content) {
+  if (typeof content === "string") return [content];
+  if (!Array.isArray(content)) return [];
+  const parts = [];
+  for (const block of content) {
+    if (typeof block === "string") {
+      parts.push(block);
+      continue;
+    }
+    if (!block || typeof block !== "object") continue;
+    const type = typeof block.type === "string" ? block.type : "";
+    if (type === "tool_use" || type === "server_tool_use") continue;
+    if ((type === "text" || type === "output_text") && typeof block.text === "string") {
+      parts.push(block.text);
+    }
+  }
+  return parts;
+}
+
+function assistantTextFromEntry(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const message = entry.message && typeof entry.message === "object" ? entry.message : null;
+  const content = message && Object.prototype.hasOwnProperty.call(message, "content")
+    ? message.content
+    : entry.content;
+  return normalizeAssistantOutputText(assistantTextPartsFromContent(content).join("\n\n"));
+}
+
+function extractLastAssistantTextFromEntries(entries, sessionId, options = {}) {
+  if (!Array.isArray(entries) || !entries.length) return null;
+  const maxLen = Number.isInteger(options.maxLen) && options.maxLen > 0
+    ? options.maxLen
+    : ASSISTANT_OUTPUT_MAX;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (!entry || typeof entry !== "object") continue;
+    if (assistantEntryIsTurnBoundary(entry, sessionId)) break;
+    if (entry.type !== "assistant") continue;
+    if (entry.isApiErrorMessage === true) continue;
+    if (!assistantEntryMatchesSession(entry, sessionId)) continue;
+    if (assistantEntryLooksSubagent(entry)) continue;
+    const text = assistantTextFromEntry(entry);
+    if (!text) continue;
+    return clampAssistantOutputText(text, maxLen);
+  }
+  return null;
 }
 
 // Find the most recent isApiErrorMessage entry for the current session, but
@@ -279,6 +378,12 @@ function buildStateBody(event, payload, resolve) {
       body.failure_kind = "api_error";
       body.api_error_type = apiError.api_error_type;
       body.error_present = true;
+    } else {
+      const assistantOutput = extractLastAssistantTextFromEntries(transcriptEntries, sessionId);
+      if (assistantOutput && assistantOutput.text) {
+        body.assistant_last_output = assistantOutput.text;
+        if (assistantOutput.truncated) body.assistant_last_output_truncated = true;
+      }
     }
   }
   if (process.env.CLAWD_REMOTE) {
@@ -335,5 +440,6 @@ module.exports = {
   buildStateBody,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
+  extractLastAssistantTextFromEntries,
   readTranscriptTailEntries,
 };

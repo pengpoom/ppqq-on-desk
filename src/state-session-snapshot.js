@@ -184,6 +184,10 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     provider: (session && session.provider) || null,
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
+    assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
+      ? session.assistantLastOutput
+      : null,
+    assistantLastOutputTruncated: !!(session && session.assistantLastOutputTruncated === true),
     lastEvent: latestEvent ? {
       labelKey: rawEvent ? (EVENT_LABEL_KEYS[rawEvent] || null) : null,
       rawEvent,
@@ -292,6 +296,8 @@ function sessionSnapshotSignature(snapshot) {
       provider: entry.provider,
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
+      assistantLastOutput: entry.assistantLastOutput,
+      assistantLastOutputTruncated: !!entry.assistantLastOutputTruncated,
       lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,
       lastEventRawEvent: entry.lastEvent ? entry.lastEvent.rawEvent : null,
       lastEventAt: entry.lastEvent ? entry.lastEvent.at : null,
