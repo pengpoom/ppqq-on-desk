@@ -525,11 +525,17 @@ function createTelegramNativeRunner({
         reply_markup: {
           inline_keyboard: inlineKeyboard,
         },
-      }).then((msg) => {
+      }, signal ? { signal } : undefined).then((msg) => {
         const current = pendingApprovals.get(id);
-        if (current) current.messageId = msg && msg.message_id;
+        if (!current || (signal && signal.aborted)) return;
+        current.messageId = msg && msg.message_id;
         log("debug", "native approval card sent");
       }).catch((err) => {
+        if (signal && signal.aborted) {
+          log("debug", "native approval send aborted");
+          finishApproval(id, null);
+          return;
+        }
         log("warn", "native approval send failed", { error: err && err.message });
         noteError("approval", classifyError(err));
         finishApproval(id, null);

@@ -412,6 +412,57 @@ test("native runner requestApproval resolves null on abort and send failure", as
   }
 });
 
+test("native runner aborts an in-flight approval send before a late Telegram success", async () => {
+  const server = createFakeTelegramServer();
+  const logs = [];
+  let releaseFirstPoll;
+  let releaseSend;
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", () => new Promise((resolve) => { releaseSend = resolve; }));
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    log: (level, message) => logs.push({ level, message }),
+  });
+  await runner.start();
+  await tick();
+
+  const controller = new AbortController();
+  const promise = runner.requestApproval(
+    { title: "claude-code requests Bash", detail: "Summary: Run tests" },
+    { signal: controller.signal },
+  );
+  await tick();
+  assert.equal(server.calls.filter((call) => call.method === "sendMessage").length, 1);
+
+  controller.abort();
+  assert.equal(await promise, null);
+  await tick();
+
+  releaseSend({ ok: true, result: { message_id: 44, chat: { id: 123 } } });
+  await tick();
+  await tick();
+
+  assert.equal(
+    logs.some((entry) => entry.message === "native approval card sent"),
+    false,
+    "aborted approval sends must not report a late card as delivered",
+  );
+  assert.equal(
+    logs.some((entry) => entry.message === "native approval send aborted"),
+    true,
+    "abort should cancel the in-flight Telegram send",
+  );
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await runner.stop();
+});
+
 test("native runner requestApproval is disabled until polling with a valid payload", async () => {
   const runner = createTelegramNativeRunner({
     tokenStore: tokenStore(),

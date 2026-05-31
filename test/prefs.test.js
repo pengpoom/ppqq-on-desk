@@ -811,6 +811,27 @@ describe("prefs.migrate v6 → v7 (Codex Native prompt sound default)", () => {
   });
 });
 
+describe("prefs.migrate v7 → v8 (Telegram bare completion default)", () => {
+  it("turns old persisted bare completion pings off", () => {
+    const upgraded = prefs.migrate({
+      version: 7,
+      tgApproval: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        notifyOnComplete: true,
+        completionOutputMode: "full",
+      },
+    });
+    const validated = prefs.validate(upgraded);
+
+    assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(validated.tgApproval.notifyOnComplete, false);
+    assert.strictEqual(validated.tgApproval.completionOutputMode, "full");
+    assert.strictEqual(validated.tgApproval.enabled, true);
+  });
+});
+
 describe("prefs.load", () => {
   it("returns defaults for missing file (ENOENT) without backup", () => {
     const p = makeTempPath();
