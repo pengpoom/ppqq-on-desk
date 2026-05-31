@@ -261,9 +261,9 @@ describe("renderer object-channel selection", () => {
     const source = readNormalized(RENDERER);
 
     assert.ok(source.includes("swapToFile(svgFile, null);"));
-    assert.ok(source.includes("swapToFile(_dragSvg, null);"));
+    assert.ok(source.includes("swapToFile(dragSvg, null);"));
     assert.ok(!source.includes("swapToFile(svgFile, null, false);"));
-    assert.ok(!source.includes("swapToFile(_dragSvg, null, false);"));
+    assert.ok(!source.includes("swapToFile(dragSvg, null, false);"));
   });
 
   it("uses a monotonic cache-bust counter for remaining img-channel SVG swaps", () => {

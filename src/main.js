@@ -477,6 +477,7 @@ codexPetMain = createCodexPetMain({
   getMainWindow: () => win,
   getSettingsWindow,
   path,
+  reloadActiveTheme: () => themeRuntime.reloadActiveTheme(),
   rebuildAllMenus: () => rebuildAllMenus(),
   settingsController: _settingsController,
   shell,
