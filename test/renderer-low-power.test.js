@@ -230,6 +230,15 @@ describe("renderer low-power idle mode", () => {
     assert.ok(preload.includes('setLowPowerIdlePaused: (paused) => ipcRenderer.send("low-power-idle-paused", !!paused)'));
   });
 
+  it("relays low-power pauses to trusted scripted SVG runtimes", () => {
+    const source = readNormalized(RENDERER);
+
+    assert.ok(source.includes("function setCurrentScriptedSvgLowPowerPaused(paused)"));
+    assert.ok(source.includes("target.contentWindow.__clawdSetLowPowerPaused"));
+    assert.ok(source.includes("setCurrentScriptedSvgLowPowerPaused(true);"));
+    assert.ok(source.includes("setCurrentScriptedSvgLowPowerPaused(false);"));
+  });
+
   it("resets main's paused mirror on renderer reload/crash and boosts eye resend on resume", () => {
     const source = readNormalized(MAIN);
 

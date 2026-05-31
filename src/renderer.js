@@ -104,6 +104,15 @@ function getCurrentSvgRoot() {
   }
 }
 
+function setCurrentScriptedSvgLowPowerPaused(paused) {
+  const target = clawdEl;
+  if (!target || target.tagName !== "OBJECT") return;
+  try {
+    const fn = target.contentWindow && target.contentWindow.__clawdSetLowPowerPaused;
+    if (typeof fn === "function") fn(!!paused);
+  } catch {}
+}
+
 function shouldPauseForLowPower() {
   if (isReacting || isDragReacting) return false;
   return lowPowerIdleMode && LOW_POWER_PAUSE_STATES.has(currentState);
@@ -204,6 +213,7 @@ function pauseCurrentSvgForLowPower({ waitForBoundary = false } = {}) {
   try {
     if (typeof root.pauseAnimations === "function") root.pauseAnimations();
   } catch {}
+  setCurrentScriptedSvgLowPowerPaused(true);
   setLowPowerSvgPaused(true);
 }
 
@@ -221,6 +231,7 @@ function resumeCurrentSvgForLowPower() {
       if (typeof root.unpauseAnimations === "function") root.unpauseAnimations();
     } catch {}
   }
+  setCurrentScriptedSvgLowPowerPaused(false);
   setLowPowerSvgPaused(false);
 }
 
