@@ -193,3 +193,164 @@ describe("auto-pilot: showPermissionBubble auto-approve chokepoint", () => {
     });
   });
 });
+
+// ── Per-agent coverage ──────────────────────────────────────────────────────
+// Auto-pilot must emit each agent's own "allow" wire format, not just resolve
+// the entry. resolvePermissionEntry(entry, "allow") branches on the is* flags,
+// so this walks every agent that actually routes through showPermissionBubble
+// (the "A class" agents that hand their permission decision to Clawd) and
+// asserts the captured HTTP/bridge reply is a real allow in that agent's shape.
+
+const http = require("node:http");
+
+function makeCapturingRes() {
+  const captured = { statusCode: null, headers: {}, body: "", destroyCalls: 0 };
+  return {
+    captured,
+    writableEnded: false,
+    destroyed: false,
+    headersSent: false,
+    writeHead(status, headers) {
+      captured.statusCode = status;
+      if (headers) Object.assign(captured.headers, headers);
+      this.headersSent = true;
+    },
+    end(chunk) {
+      if (chunk !== undefined) captured.body += String(chunk);
+      this.writableEnded = true;
+    },
+    destroy() { captured.destroyCalls++; this.destroyed = true; },
+    on() {},
+    removeListener() {},
+  };
+}
+
+describe("auto-pilot: per-agent allow wire formats", () => {
+  // Each case: the is* flags that the route stamps + a verify() over the
+  // captured HTTP response body. CC / CodeBuddy / Kimi share the generic
+  // hookSpecificOutput path (no is* flag).
+  const cases = [
+    {
+      name: "claude-code",
+      entry: { agentId: "claude-code" },
+      verify(captured) {
+        assert.equal(captured.statusCode, 200);
+        const d = JSON.parse(captured.body).hookSpecificOutput.decision;
+        assert.equal(d.behavior, "allow");
+      },
+    },
+    {
+      name: "codebuddy (shares CC path)",
+      entry: { agentId: "codebuddy" },
+      verify(captured) {
+        const d = JSON.parse(captured.body).hookSpecificOutput.decision;
+        assert.equal(d.behavior, "allow");
+      },
+    },
+    {
+      name: "kimi-cli (interactive perm, shares CC path)",
+      entry: { agentId: "kimi-cli" },
+      verify(captured) {
+        const d = JSON.parse(captured.body).hookSpecificOutput.decision;
+        assert.equal(d.behavior, "allow");
+      },
+    },
+    {
+      name: "codex",
+      entry: { agentId: "codex", isCodex: true },
+      verify(captured) {
+        assert.equal(captured.statusCode, 200);
+        const d = JSON.parse(captured.body).hookSpecificOutput.decision;
+        assert.equal(d.behavior, "allow");
+      },
+    },
+    {
+      name: "qwen-code",
+      entry: { agentId: "qwen-code", isQwenCode: true },
+      verify(captured) {
+        const d = JSON.parse(captured.body).hookSpecificOutput.decision;
+        assert.equal(d.behavior, "allow");
+      },
+    },
+    {
+      name: "copilot-cli (bare {behavior} format)",
+      entry: { agentId: "copilot-cli", isCopilotCli: true },
+      verify(captured) {
+        assert.equal(captured.statusCode, 200);
+        const body = JSON.parse(captured.body);
+        // Copilot has no hookSpecificOutput envelope — bare {behavior}.
+        assert.equal(body.behavior, "allow");
+        assert.equal(body.hookSpecificOutput, undefined);
+      },
+    },
+    {
+      name: "hermes ({decision} format)",
+      entry: { agentId: "hermes", isHermes: true },
+      verify(captured) {
+        const body = JSON.parse(captured.body);
+        assert.equal(body.decision, "allow");
+      },
+    },
+  ];
+
+  for (const c of cases) {
+    it(`auto-approves ${c.name} with the correct allow format`, () => {
+      const res = makeCapturingRes();
+      const ctx = makeCtx();
+      const perm = initPermission(ctx);
+      const permEntry = makePermEntry({ res, ...c.entry });
+      perm.pendingPermissions.push(permEntry);
+
+      perm.showPermissionBubble(permEntry);
+
+      assert.equal(
+        perm.pendingPermissions.indexOf(permEntry),
+        -1,
+        "entry resolved out of pending list"
+      );
+      assert.equal(permEntry.bubble, null, "no bubble created");
+      c.verify(res.captured);
+    });
+  }
+
+  it("auto-approves opencode by replying 'once' over the bridge", async () => {
+    // opencode has no held HTTP response — the decision goes back via a POST
+    // to the plugin's reverse bridge. Stand up a real listener to capture it.
+    const received = await new Promise((resolve, reject) => {
+      const server = http.createServer();
+      server.on("request", (req, res) => {
+        let body = "";
+        req.on("data", (ch) => { body += ch; });
+        req.on("end", () => {
+          res.writeHead(200); res.end("{}");
+          server.close();
+          resolve({ body: JSON.parse(body || "{}"), auth: req.headers.authorization });
+        });
+      });
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address();
+        const ctx = makeCtx();
+        const perm = initPermission(ctx);
+        const permEntry = makePermEntry({
+          res: null,
+          agentId: "opencode",
+          isOpencode: true,
+          opencodeRequestId: "per_test_123",
+          opencodeBridgeUrl: `http://127.0.0.1:${port}`,
+          opencodeBridgeToken: "tok_test",
+        });
+        perm.pendingPermissions.push(permEntry);
+        perm.showPermissionBubble(permEntry);
+        assert.equal(perm.pendingPermissions.indexOf(permEntry), -1, "opencode entry resolved");
+      });
+    });
+
+    // Auto-pilot does not set opencodeAlwaysPicked, so the reply is "once"
+    // (single-call allow), authenticated with the bridge token.
+    assert.equal(received.body.request_id, "per_test_123");
+    assert.equal(received.body.reply, "once");
+    assert.equal(received.auth, "Bearer tok_test");
+  });
+});
+
