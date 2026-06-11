@@ -168,6 +168,77 @@ describe("macOS generic focus via open <bundle> (#465)", () => {
     }, 100);
   });
 
+  it("runs the iTerm tab script alongside open when the source is iTerm2", (t, done) => {
+    const calls = [];
+    const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      calls.push({ cmd, args: [...args], opts });
+      if (isPidCommPs(cmd, args)) {
+        if (cb) cb(null, "4242 /Applications/iTerm.app/Contents/MacOS/iTerm2\n", "");
+        return;
+      }
+      if (cmd === "ps" && args.join(" ").includes("tty=")) {
+        if (cb) cb(null, "  30713 ttys003\n", "");
+        return;
+      }
+      if (cmd === "ps") {
+        // Single-column comm gate used by the specialized handlers.
+        if (cb) cb(null, "/Applications/iTerm.app/Contents/MacOS/iTerm2\n", "");
+        return;
+      }
+      if (cb) cb(null, "", "");
+    });
+
+    const { focusTerminalWindow } = initFocus({});
+    focusTerminalWindow(4242, null, null, [30713, 4242]);
+
+    // The iTerm tab script fires on a 400ms delay — wait past it.
+    setTimeout(() => {
+      cleanup();
+      const openCall = calls.find((c) =>
+        c.cmd === "/usr/bin/open" && c.args.includes("/Applications/iTerm.app"));
+      assert.ok(openCall, "Should activate iTerm via /usr/bin/open (restores minimized windows)");
+      const itermTabCall = calls.find((c) =>
+        c.cmd === "osascript"
+        && c.args.some((a) => typeof a === "string" && a.includes('tell application "iTerm2"') && a.includes("select t")));
+      assert.ok(itermTabCall, "Specialized iTerm tab selection should still run alongside open");
+      const frontmostCall = calls.find((c) => isSystemEventsFrontmost(c.cmd, c.args));
+      assert.ok(!frontmostCall, "Should not run the System Events frontmost script when open succeeds");
+      done();
+    }, 700);
+  });
+
+  it("logs automation-denied when the System Events fallback hits TCC -1743", (t, done) => {
+    const logs = [];
+    const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      if (isPidCommPs(cmd, args)) {
+        if (cb) cb(null, "4242 /opt/homebrew/bin/wezterm-gui\n", "");
+        return;
+      }
+      if (cmd === "ps") { if (cb) cb(null, "/opt/homebrew/bin/wezterm-gui\n", ""); return; }
+      if (isSystemEventsFrontmost(cmd, args)) {
+        if (cb) cb(
+          Object.assign(new Error("osascript exited 1"), { code: 1 }),
+          "",
+          "execution error: Not authorized to send Apple events to System Events. (-1743)"
+        );
+        return;
+      }
+      if (cb) cb(null, "", "");
+    });
+
+    const { focusTerminalWindow } = initFocus({ focusLog: (msg) => logs.push(String(msg)) });
+    focusTerminalWindow(4242, null, null, [4242]);
+
+    setTimeout(() => {
+      cleanup();
+      const denied = logs.find((l) => l.includes("branch=mac-frontmost") && l.includes("reason=automation-denied"));
+      assert.ok(denied, `focus log should record automation-denied, got: ${JSON.stringify(logs)}`);
+      done();
+    }, 100);
+  });
+
   it("ignores the ps exit code and parses surviving rows (dead pid in the list)", (t, done) => {
     const calls = [];
     const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
