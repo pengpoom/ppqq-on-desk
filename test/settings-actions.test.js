@@ -198,6 +198,10 @@ describe("updateRegistry pure-data validators", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.agents({}, deps).status, "ok");
     assert.strictEqual(updateRegistry.agents([], deps).status, "error");
+    assert.strictEqual(updateRegistry.dismissedAgentInstallHints({ "qwen-code": true }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.dismissedAgentInstallHints({ "qwen-code": false }, deps).status, "error");
+    assert.strictEqual(updateRegistry.dismissedAgentCleanupHints({ "qwen-code": true }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.dismissedAgentCleanupHints({ "qwen-code": false }, deps).status, "error");
     assert.strictEqual(updateRegistry.themeOverrides({}, deps).status, "ok");
     assert.strictEqual(updateRegistry.themeOverrides("nope", deps).status, "error");
   });
@@ -878,6 +882,8 @@ describe("hook commands", () => {
   it("cleanupIntegrations disables all managed agents before running cleanup", async () => {
     const calls = [];
     const snapshot = prefs.getDefaults();
+    snapshot.dismissedAgentInstallHints = { hermes: true };
+    snapshot.dismissedAgentCleanupHints = { "qwen-code": true, hermes: true };
     const result = await commandRegistry.cleanupIntegrations(null, {
       snapshot,
       stopIntegrationForAgent: (agentId) => calls.push(["stopIntegration", agentId]),
@@ -894,11 +900,18 @@ describe("hook commands", () => {
     });
 
     assert.strictEqual(result.status, "ok");
+    assert.strictEqual(commandRegistry.cleanupIntegrations.lockKey, "agentIntegration");
     assert.strictEqual(result.cleanup.summary.entriesRemoved, 3);
     for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
       assert.strictEqual(result.commit.agents[agentId].enabled, false, `${agentId} should be disabled`);
       assert.strictEqual(result.commit.agents[agentId].integrationInstalled, false, `${agentId} should be uninstalled`);
+      assert.strictEqual(
+        result.commit.dismissedAgentInstallHints[agentId],
+        true,
+        `${agentId} install hint should be dismissed after bulk cleanup`
+      );
     }
+    assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, {});
     assert.deepStrictEqual(calls.at(-1), ["cleanup", "about"]);
     assert.deepStrictEqual(calls[0], ["stopIntegration", "claude-code"]);
   });

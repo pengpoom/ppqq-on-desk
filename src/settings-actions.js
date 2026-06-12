@@ -84,7 +84,11 @@ const {
   resetAllShortcuts,
 } = require("./settings-actions-shortcuts");
 const {
+  clearAgentCleanupHints,
+  clearAgentInstallHints,
+  dismissAgentCleanupHints,
   installAgentIntegration,
+  dismissAgentInstallHints,
   setAgentFlag,
   setAgentPermissionMode,
   uninstallAgentIntegration,
@@ -356,6 +360,34 @@ const updateRegistry = {
       }
       if (value[key] !== true) {
         return { status: "error", message: `dismissedUpdateVersions["${key}"] must be the literal true` };
+      }
+    }
+    return { status: "ok" };
+  },
+  dismissedAgentInstallHints(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "dismissedAgentInstallHints must be a plain object" };
+    }
+    for (const key of Object.keys(value)) {
+      if (typeof key !== "string" || !key) {
+        return { status: "error", message: "dismissedAgentInstallHints keys must be non-empty strings" };
+      }
+      if (value[key] !== true) {
+        return { status: "error", message: `dismissedAgentInstallHints["${key}"] must be the literal true` };
+      }
+    }
+    return { status: "ok" };
+  },
+  dismissedAgentCleanupHints(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "dismissedAgentCleanupHints must be a plain object" };
+    }
+    for (const key of Object.keys(value)) {
+      if (typeof key !== "string" || !key) {
+        return { status: "error", message: "dismissedAgentCleanupHints keys must be non-empty strings" };
+      }
+      if (value[key] !== true) {
+        return { status: "error", message: `dismissedAgentCleanupHints["${key}"] must be the literal true` };
       }
     }
     return { status: "ok" };
@@ -1109,6 +1141,27 @@ function cleanupMessage(result) {
     : `Integration cleanup finished; removed ${removed} item(s) from ${affected} integration(s).`;
 }
 
+function normalizeAgentDismissMapForCommit(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const key of Object.keys(value)) {
+    if (typeof key === "string" && key && value[key] === true) out[key] = true;
+  }
+  return out;
+}
+
+function markDismissedAgentInstallHints(snapshot, agentIds) {
+  const next = normalizeAgentDismissMapForCommit(snapshot && snapshot.dismissedAgentInstallHints);
+  for (const agentId of agentIds) next[agentId] = true;
+  return next;
+}
+
+function clearDismissedAgentCleanupHints(snapshot, agentIds) {
+  const next = normalizeAgentDismissMapForCommit(snapshot && snapshot.dismissedAgentCleanupHints);
+  for (const agentId of agentIds) delete next[agentId];
+  return next;
+}
+
 async function cleanupIntegrationsCommand(_payload, deps = {}) {
   if (!deps || typeof deps.cleanupIntegrations !== "function") {
     return { status: "error", message: "cleanupIntegrations requires cleanupIntegrations dep" };
@@ -1161,8 +1214,12 @@ async function cleanupIntegrationsCommand(_payload, deps = {}) {
     status: "ok",
     cleanup,
     message: cleanup.status === "error" ? cleanup.message : cleanupMessage(cleanup),
+    commit: {
+      dismissedAgentInstallHints: markDismissedAgentInstallHints(snapshot, MANAGED_CLEANUP_AGENT_IDS),
+      dismissedAgentCleanupHints: clearDismissedAgentCleanupHints(snapshot, MANAGED_CLEANUP_AGENT_IDS),
+    },
   };
-  if (agentsChanged) response.commit = { agents };
+  if (agentsChanged) response.commit.agents = agents;
   return response;
 }
 
@@ -1186,7 +1243,7 @@ remoteSshMarkDeployed.lockKey = "remoteSsh";
 remoteSshMarkRemoteNode.lockKey = "remoteSsh";
 telegramApprovalSetToken.lockKey = "tgApproval";
 telegramApprovalSendTest.lockKey = "tgApproval";
-cleanupIntegrationsCommand.lockKey = "agentIntegrationCleanup";
+cleanupIntegrationsCommand.lockKey = "agentIntegration";
 
 const repairDoctorIssue = createRepairDoctorIssue({
   repairAgentIntegration,
@@ -1227,6 +1284,10 @@ const commandRegistry = {
   installHooks,
   uninstallHooks,
   cleanupIntegrations: cleanupIntegrationsCommand,
+  clearAgentCleanupHints,
+  clearAgentInstallHints,
+  dismissAgentCleanupHints,
+  dismissAgentInstallHints,
   installAgentIntegration,
   repairAgentIntegration,
   uninstallAgentIntegration,

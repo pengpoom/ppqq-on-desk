@@ -134,6 +134,9 @@ function setAgentFlag(payload, deps) {
 const _validateAgentPermissionModeId = requireString("setAgentPermissionMode.agentId");
 const _validateInstallAgentId = requireString("installAgentIntegration.agentId");
 const _validateUninstallAgentId = requireString("uninstallAgentIntegration.agentId");
+const _validateDismissInstallHintId = requireString("dismissAgentInstallHints.agentId");
+const _validateDismissCleanupHintId = requireString("dismissAgentCleanupHints.agentId");
+const _validateClearCleanupHintId = requireString("clearAgentCleanupHints.agentId");
 
 function setAgentPermissionMode(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -185,7 +188,11 @@ function normalizeAgentIntegrationPayload(payload, validateAgentId, actionName) 
       message: `No automatic integration ${actionName} is available for ${agentId}`,
     };
   }
-  return { status: "ok", agentId };
+  return {
+    status: "ok",
+    agentId,
+    dismissInstallHint: !(payload && typeof payload === "object" && payload.dismissInstallHint === false),
+  };
 }
 
 function resultMessage(result, fallback) {
@@ -210,6 +217,32 @@ function buildAgentCommit(snapshot, agentId, patch) {
   };
 }
 
+function withoutDismissedInstallHint(snapshot, agentId) {
+  const current = snapshot && snapshot.dismissedAgentInstallHints;
+  if (!current || typeof current !== "object" || Array.isArray(current)) return {};
+  if (current[agentId] !== true) return current;
+  const next = { ...current };
+  delete next[agentId];
+  return next;
+}
+
+function withDismissedInstallHint(snapshot, agentId) {
+  const current = snapshot && snapshot.dismissedAgentInstallHints;
+  return {
+    ...(current && typeof current === "object" && !Array.isArray(current) ? current : {}),
+    [agentId]: true,
+  };
+}
+
+function withoutDismissedCleanupHint(snapshot, agentId) {
+  const current = snapshot && snapshot.dismissedAgentCleanupHints;
+  if (!current || typeof current !== "object" || Array.isArray(current)) return {};
+  if (current[agentId] !== true) return current;
+  const next = { ...current };
+  delete next[agentId];
+  return next;
+}
+
 async function installAgentIntegration(payload, deps = {}) {
   const normalized = normalizeAgentIntegrationPayload(payload, _validateInstallAgentId, "install");
   if (normalized.status !== "ok") return normalized;
@@ -231,6 +264,13 @@ async function installAgentIntegration(payload, deps = {}) {
     if (result === false) {
       return { status: "error", message: `No automatic integration install is available for ${agentId}` };
     }
+    if (result && typeof result === "object" && result.status === "skipped") {
+      return {
+        status: "skipped",
+        reason: result.reason,
+        message: resultMessage(result, `Skipped installing ${agentId}`),
+      };
+    }
     if (result && typeof result === "object" && result.status && result.status !== "ok") {
       return {
         status: "error",
@@ -241,10 +281,14 @@ async function installAgentIntegration(payload, deps = {}) {
     return {
       status: "ok",
       message: resultMessage(result, `Installed ${agentId}`),
-      commit: buildAgentCommit(snapshot, agentId, {
-        integrationInstalled: true,
-        enabled: true,
-      }),
+      commit: {
+        ...buildAgentCommit(snapshot, agentId, {
+          integrationInstalled: true,
+          enabled: true,
+        }),
+        dismissedAgentInstallHints: withoutDismissedInstallHint(snapshot, agentId),
+        dismissedAgentCleanupHints: withoutDismissedCleanupHint(snapshot, agentId),
+      },
     };
   } catch (err) {
     return {
@@ -257,7 +301,7 @@ async function installAgentIntegration(payload, deps = {}) {
 async function uninstallAgentIntegration(payload, deps = {}) {
   const normalized = normalizeAgentIntegrationPayload(payload, _validateUninstallAgentId, "uninstall");
   if (normalized.status !== "ok") return normalized;
-  const { agentId } = normalized;
+  const { agentId, dismissInstallHint } = normalized;
   const snapshot = deps.snapshot || {};
   if (!deps || typeof deps.uninstallIntegrationForAgent !== "function") {
     return { status: "error", message: "uninstallAgentIntegration requires uninstallIntegrationForAgent dep" };
@@ -280,10 +324,16 @@ async function uninstallAgentIntegration(payload, deps = {}) {
     return {
       status: "ok",
       message: resultMessage(result, `Uninstalled ${agentId}`),
-      commit: buildAgentCommit(snapshot, agentId, {
-        integrationInstalled: false,
-        enabled: false,
-      }),
+      commit: {
+        ...buildAgentCommit(snapshot, agentId, {
+          integrationInstalled: false,
+          enabled: false,
+        }),
+        dismissedAgentInstallHints: dismissInstallHint
+          ? withDismissedInstallHint(snapshot, agentId)
+          : withoutDismissedInstallHint(snapshot, agentId),
+        dismissedAgentCleanupHints: withoutDismissedCleanupHint(snapshot, agentId),
+      },
     };
   } catch (err) {
     return {
@@ -376,7 +426,107 @@ async function repairAgentIntegration(payload, deps) {
   }
 }
 
+function normalizeDismissAgentHintPayload(payload, validateAgentId, commandName) {
+  const raw = Array.isArray(payload && payload.agentIds)
+    ? payload.agentIds
+    : [typeof payload === "string" ? payload : payload && payload.agentId].filter(Boolean);
+  const agentIds = [];
+  for (const value of raw) {
+    const idCheck = validateAgentId(value);
+    if (idCheck.status !== "ok") return idCheck;
+    if (!INSTALLABLE_AGENT_IDS.has(value)) {
+      return {
+        status: "error",
+        message: `No automatic integration dismiss is available for ${value}`,
+      };
+    }
+    if (!agentIds.includes(value)) agentIds.push(value);
+  }
+  if (agentIds.length === 0) {
+    return { status: "error", message: `${commandName}.agentIds must include at least one agent` };
+  }
+  return { status: "ok", agentIds };
+}
+
+function dismissAgentInstallHints(payload, deps = {}) {
+  const normalized = normalizeDismissAgentHintPayload(payload, _validateDismissInstallHintId, "dismissAgentInstallHints");
+  if (normalized.status !== "ok") return normalized;
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.dismissedAgentInstallHints;
+  const next = current && typeof current === "object" && !Array.isArray(current) ? { ...current } : {};
+  let changed = false;
+  for (const agentId of normalized.agentIds) {
+    if (next[agentId] === true) continue;
+    next[agentId] = true;
+    changed = true;
+  }
+  if (!changed) return { status: "ok", noop: true };
+  return { status: "ok", commit: { dismissedAgentInstallHints: next } };
+}
+
+function dismissAgentCleanupHints(payload, deps = {}) {
+  const normalized = normalizeDismissAgentHintPayload(payload, _validateDismissCleanupHintId, "dismissAgentCleanupHints");
+  if (normalized.status !== "ok") return normalized;
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.dismissedAgentCleanupHints;
+  const next = current && typeof current === "object" && !Array.isArray(current) ? { ...current } : {};
+  let changed = false;
+  for (const agentId of normalized.agentIds) {
+    if (next[agentId] === true) continue;
+    next[agentId] = true;
+    changed = true;
+  }
+  if (!changed) return { status: "ok", noop: true };
+  return { status: "ok", commit: { dismissedAgentCleanupHints: next } };
+}
+
+function clearAgentCleanupHints(payload, deps = {}) {
+  const normalized = normalizeDismissAgentHintPayload(payload, _validateClearCleanupHintId, "clearAgentCleanupHints");
+  if (normalized.status !== "ok") return normalized;
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.dismissedAgentCleanupHints;
+  const next = current && typeof current === "object" && !Array.isArray(current) ? { ...current } : {};
+  let changed = false;
+  for (const agentId of normalized.agentIds) {
+    if (next[agentId] !== true) continue;
+    delete next[agentId];
+    changed = true;
+  }
+  if (!changed) return { status: "ok", noop: true };
+  return { status: "ok", commit: { dismissedAgentCleanupHints: next } };
+}
+
+function clearAgentInstallHints(payload, deps = {}) {
+  const normalized = normalizeDismissAgentHintPayload(payload, _validateDismissInstallHintId, "clearAgentInstallHints");
+  if (normalized.status !== "ok") return normalized;
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.dismissedAgentInstallHints;
+  const next = current && typeof current === "object" && !Array.isArray(current) ? { ...current } : {};
+  let changed = false;
+  for (const agentId of normalized.agentIds) {
+    if (next[agentId] !== true) continue;
+    delete next[agentId];
+    changed = true;
+  }
+  if (!changed) return { status: "ok", noop: true };
+  return { status: "ok", commit: { dismissedAgentInstallHints: next } };
+}
+
+setAgentFlag.lockKey = "agentIntegration";
+setAgentPermissionMode.lockKey = "agentIntegration";
+installAgentIntegration.lockKey = "agentIntegration";
+uninstallAgentIntegration.lockKey = "agentIntegration";
+repairAgentIntegration.lockKey = "agentIntegration";
+dismissAgentInstallHints.lockKey = "agentIntegration";
+dismissAgentCleanupHints.lockKey = "agentIntegration";
+clearAgentCleanupHints.lockKey = "agentIntegration";
+clearAgentInstallHints.lockKey = "agentIntegration";
+
 module.exports = {
+  clearAgentCleanupHints,
+  clearAgentInstallHints,
+  dismissAgentCleanupHints,
+  dismissAgentInstallHints,
   installAgentIntegration,
   setAgentFlag,
   setAgentPermissionMode,

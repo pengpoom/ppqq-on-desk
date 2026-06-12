@@ -725,6 +725,7 @@ function loadAgentsTabForTest({
   snapshot,
   agentMetadata,
   collapsedGroups = {},
+  settingsAPI = {},
 } = {}) {
   const raf = createQueuedRaf();
   const body = new FakeElement("body");
@@ -760,6 +761,7 @@ function loadAgentsTabForTest({
     globalThis: null,
     settingsAPI: {
       command: () => Promise.resolve({ status: "ok" }),
+      ...settingsAPI,
     },
     ClawdSettingsSizeSlider: {
       SIZE_UI_MIN: 1,
@@ -778,6 +780,9 @@ function loadAgentsTabForTest({
           agentsTitle: "Agents",
           agentsSubtitle: "subtitle",
           agentsEmpty: "empty",
+          agentSectionConnected: "Connected",
+          agentSectionRecommended: "Detected locally",
+          agentSectionUnavailable: "Not detected locally",
           rowAgentIdleAlerts: "Idle alerts",
           rowAgentIdleAlertsDesc: "Idle alert desc",
           rowAgentPermissions: "Permissions",
@@ -793,8 +798,32 @@ function loadAgentsTabForTest({
           eventSourceLogPoll: "Log poll",
           eventSourcePlugin: "Plugin",
           eventSourceExtension: "Extension",
+          agentIntegrationInstalled: "Installed",
+          agentIntegrationNotInstalled: "Not installed",
+          agentIntegrationInstall: "Install",
+          agentIntegrationUninstall: "Uninstall",
+          agentIntegrationWorking: "Working",
+          agentIntegrationUninstallConfirm: "Confirm uninstall",
+          agentIntegrationInstallSkipped: "No local installation was found for {agents}.",
+          agentListSeparator: ", ",
+          agentInstallHintTitle: "Connect detected agents",
+          agentInstallHintDesc: "Detected local signals for {agents}.",
+          agentInstallHintInstallRecommended: "Install recommended",
+          agentInstallHintDismiss: "Not now",
+          agentCleanupHintTitle: "Review missing local agents",
+          agentCleanupHintDesc: "Missing local installs for {agents}.",
+          agentCleanupHintRemove: "Remove integrations",
+          agentCleanupHintDismiss: "Keep for now",
           collapsibleExpand: "Expand",
           collapsibleCollapse: "Collapse",
+          toastAgentIntegrationInstalled: "Integration installed.",
+          toastAgentIntegrationUninstalled: "Integration uninstalled.",
+          toastAgentInstallHintInstalled: "Recommended integrations installed.",
+          toastAgentInstallHintSkipped: "No local installation was found for {agents}.",
+          toastAgentInstallHintPartialSkipped: "{success} installed. Skipped {agents}.",
+          toastAgentInstallHintPartial: "{success} installed, {failed} failed: {message}",
+          toastAgentCleanupHintRemoved: "Missing integrations removed.",
+          toastAgentCleanupHintPartial: "{success} removed, {failed} failed: {message}",
           toastSaveFailed: "Failed: ",
         },
       },
@@ -3916,6 +3945,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(agentOrderSource.includes("NON_COLLAPSIBLE_AGENT_PRIORITY"));
     assert.ok(agentsSource.includes("ClawdSettingsAgentOrder"));
     assert.ok(agentsSource.includes("sortAgentMetadataForSettings(runtime.agentMetadata"));
+    assert.ok(agentsSource.includes("function categorizeAgentsForSections("));
+    assert.ok(agentsSource.includes("function renderAgentSections("));
   });
 
   it("keeps Agent management capability-driven for Gemini wait-for-input alerts", () => {
@@ -3935,6 +3966,459 @@ describe("settings renderer browser environment", () => {
     const i18nSource = fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8");
     assert.ok(agentsSource.includes('window.confirm(t("agentIntegrationUninstallConfirm"))'));
     assert.ok(i18nSource.includes("agentIntegrationUninstallConfirm"));
+  });
+
+  it("fetches agent installation hints lazily when Agents renders and then uses the cache", async () => {
+    let calls = 0;
+    const detectionResult = {
+      checkedAt: 123,
+      agents: [{ agentId: "qwen-code", detectedInstalled: true }],
+      skippedAgentIds: ["claude-code", "codex"],
+    };
+    const harness = loadAgentsTabForTest({
+      agentMetadata: [{
+        id: "qwen-code",
+        name: "Qwen Code",
+        eventSource: "hook",
+        capabilities: {},
+      }],
+      settingsAPI: {
+        detectAgentInstallations: () => {
+          calls++;
+          return Promise.resolve(detectionResult);
+        },
+      },
+    });
+
+    assert.strictEqual(calls, 0);
+    harness.core.ops.requestRender({ content: true });
+    assert.strictEqual(calls, 1);
+    assert.strictEqual(harness.core.runtime.agentInstallationHintsPending, true);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(harness.core.runtime.agentInstallationHints.checkedAt, detectionResult.checkedAt);
+    assert.deepStrictEqual(
+      harness.core.runtime.agentInstallationHints.agents.map((agent) => agent.agentId),
+      ["qwen-code"]
+    );
+    assert.deepStrictEqual(
+      harness.core.runtime.agentInstallationHints.skippedAgentIds,
+      detectionResult.skippedAgentIds
+    );
+    assert.strictEqual(harness.core.runtime.agentInstallationHintsFetched, true);
+    assert.strictEqual(harness.core.runtime.agentInstallationHintsPending, false);
+
+    harness.core.ops.requestRender({ content: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(calls, 1);
+  });
+
+  it("groups agents into connected, recommended, and unavailable sections", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          hermes: { integrationInstalled: true, enabled: true },
+          "qwen-code": { integrationInstalled: false, enabled: false },
+          pi: { integrationInstalled: false, enabled: false },
+        },
+        dismissedAgentInstallHints: { "qwen-code": true },
+      },
+      agentMetadata: [
+        { id: "pi", name: "Pi", eventSource: "extension", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "hermes", name: "Hermes Agent", eventSource: "plugin-event", capabilities: {} },
+      ],
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [
+        { agentId: "qwen-code", detectedInstalled: true, confidence: "high" },
+        { agentId: "hermes", detectedInstalled: false, confidence: "low" },
+        { agentId: "pi", detectedInstalled: false, confidence: "low" },
+      ],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+
+    const connected = harness.content.querySelector(".agent-section-connected");
+    const recommended = harness.content.querySelector(".agent-section-recommended");
+    const unavailable = harness.content.querySelector(".agent-section-unavailable");
+    assert.ok(connected);
+    assert.ok(recommended);
+    assert.ok(unavailable);
+    assert.strictEqual(connected.querySelector(".section-title").textContent, "Connected");
+    assert.strictEqual(recommended.querySelector(".section-title").textContent, "Detected locally");
+    assert.strictEqual(unavailable.querySelector(".section-title").textContent, "Not detected locally");
+
+    const labelsFor = (section) => section.querySelectorAll(".agent-summary-row .row-label").map((el) => el.textContent);
+    assert.deepStrictEqual(labelsFor(connected), ["Hermes Agent"]);
+    assert.deepStrictEqual(labelsFor(recommended), ["Qwen Code"]);
+    assert.deepStrictEqual(labelsFor(unavailable), ["Pi"]);
+  });
+
+  it("renders an install hint banner for detected local agents that are not integrated", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "qwen-code": { integrationInstalled: false, enabled: false },
+          hermes: { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentInstallHints: {},
+      },
+      agentMetadata: [
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "hermes", name: "Hermes Agent", eventSource: "plugin-event", capabilities: {} },
+      ],
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [
+        { agentId: "qwen-code", detectedInstalled: true, confidence: "high" },
+        { agentId: "hermes", detectedInstalled: true, confidence: "high" },
+        { agentId: "pi", detectedInstalled: true, confidence: "low" },
+      ],
+      skippedAgentIds: ["claude-code", "codex"],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+
+    const banner = harness.content.querySelector(".agent-install-hint-banner");
+    assert.ok(banner, "detected unintegrated agents should render a banner");
+    assert.ok(harness.content.querySelector(".agent-install-hint-install"));
+    assert.ok(harness.content.querySelector(".agent-install-hint-dismiss"));
+    const desc = harness.content.querySelector(".agent-install-hint-desc").textContent;
+    assert.match(desc, /Qwen Code/);
+    assert.doesNotMatch(desc, /Hermes/);
+  });
+
+  it("hides install hint banners after the agent is dismissed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "qwen-code": { integrationInstalled: false, enabled: false },
+        },
+        dismissedAgentInstallHints: { "qwen-code": true },
+      },
+      agentMetadata: [
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "qwen-code", detectedInstalled: true, confidence: "high" }],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+  });
+
+  it("clears install dismissals when the detector no longer sees the agent", async () => {
+    const calls = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          codex: { integrationInstalled: false, enabled: false },
+          "qwen-code": { integrationInstalled: false, enabled: false },
+        },
+        dismissedAgentInstallHints: {
+          codex: true,
+          "qwen-code": true,
+        },
+      },
+      agentMetadata: [
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: (action, payload) => {
+          calls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
+      skippedAgentIds: ["codex"],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(calls[0][0], "clearAgentInstallHints");
+    assert.deepStrictEqual([...calls[0][1].agentIds], ["qwen-code"]);
+  });
+
+  it("wires install hint banner buttons to bulk install and dismiss commands", async () => {
+    const calls = [];
+    const detectionResult = {
+      checkedAt: 2,
+      agents: [{ agentId: "qwen-code", detectedInstalled: true, confidence: "high" }],
+      skippedAgentIds: [],
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "qwen-code": { integrationInstalled: false, enabled: false },
+        },
+        dismissedAgentInstallHints: {},
+      },
+      agentMetadata: [
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: (action, payload) => {
+          calls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+        detectAgentInstallations: () => Promise.resolve(detectionResult),
+      },
+    });
+    harness.core.runtime.agentInstallationHints = detectionResult;
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+    harness.content.querySelector(".agent-install-hint-install").dispatchEvent({ type: "click", bubbles: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(calls[0][0], "installAgentIntegration");
+    assert.strictEqual(calls[0][1].agentId, "qwen-code");
+
+    calls.length = 0;
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true });
+    harness.content.querySelector(".agent-install-hint-dismiss").dispatchEvent({ type: "click", bubbles: false });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(calls[0][0], "dismissAgentInstallHints");
+    assert.deepStrictEqual([...calls[0][1].agentIds], ["qwen-code"]);
+  });
+
+  it("shows a non-error toast when a recommended install is skipped", async () => {
+    const toasts = [];
+    const detectionResult = {
+      checkedAt: 2,
+      agents: [{ agentId: "qwen-code", detectedInstalled: true, confidence: "high" }],
+      skippedAgentIds: [],
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "qwen-code": { integrationInstalled: false, enabled: false },
+        },
+        dismissedAgentInstallHints: {},
+      },
+      agentMetadata: [
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: () => Promise.resolve({ status: "skipped", message: "Qwen missing" }),
+        detectAgentInstallations: () => Promise.resolve(detectionResult),
+      },
+    });
+    harness.core.ops.showToast = (message, options = {}) => {
+      toasts.push({ message, options });
+    };
+    harness.core.runtime.agentInstallationHints = detectionResult;
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+    harness.content.querySelector(".agent-install-hint-install").dispatchEvent({ type: "click", bubbles: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(toasts.length, 1);
+    assert.match(toasts[0].message, /Qwen Code/);
+    assert.notStrictEqual(toasts[0].options.error, true);
+  });
+
+  it("shows a non-error toast when a manual agent install is skipped", async () => {
+    const toasts = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          pi: { integrationInstalled: false, enabled: false },
+        },
+      },
+      agentMetadata: [
+        { id: "pi", name: "Pi", eventSource: "extension", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: () => Promise.resolve({ status: "skipped", message: "Pi missing" }),
+      },
+    });
+    harness.core.ops.showToast = (message, options = {}) => {
+      toasts.push({ message, options });
+    };
+
+    harness.core.ops.requestRender({ content: true });
+    harness.content.querySelector(".agent-integration-action").dispatchEvent({ type: "click", bubbles: false });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(toasts.length, 1);
+    assert.match(toasts[0].message, /Pi/);
+    assert.notStrictEqual(toasts[0].options.error, true);
+  });
+
+  it("renders cleanup hint banners only from detector entries, not skipped default agents", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "claude-code": { integrationInstalled: true, enabled: true },
+          codex: { integrationInstalled: true, enabled: true },
+          "qwen-code": { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentCleanupHints: {},
+      },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
+      skippedAgentIds: ["claude-code", "codex"],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+
+    const banner = harness.content.querySelector(".agent-cleanup-hint-banner");
+    assert.ok(banner, "installed agents missing from detector entries should render cleanup banner");
+    assert.ok(harness.content.querySelector(".agent-cleanup-hint-remove"));
+    assert.ok(harness.content.querySelector(".agent-cleanup-hint-dismiss"));
+    const desc = harness.content.querySelector(".agent-cleanup-hint-desc").textContent;
+    assert.match(desc, /Qwen Code/);
+    assert.doesNotMatch(desc, /Claude Code/);
+    assert.doesNotMatch(desc, /Codex/);
+  });
+
+  it("hides cleanup hint banners after the agent is dismissed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "qwen-code": { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentCleanupHints: { "qwen-code": true },
+      },
+      agentMetadata: [
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+  });
+
+  it("clears cleanup dismissals when the detector sees the agent restored", async () => {
+    const calls = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "qwen-code": { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentCleanupHints: { "qwen-code": true },
+      },
+      agentMetadata: [
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: (action, payload) => {
+          calls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "qwen-code", detectedInstalled: true, confidence: "high" }],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+    assert.strictEqual(calls[0][0], "clearAgentCleanupHints");
+    assert.deepStrictEqual([...calls[0][1].agentIds], ["qwen-code"]);
+  });
+
+  it("wires cleanup hint banner buttons to bulk uninstall and dismiss commands", async () => {
+    const calls = [];
+    const detectionResult = {
+      checkedAt: 2,
+      agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
+      skippedAgentIds: [],
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "qwen-code": { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentCleanupHints: {},
+      },
+      agentMetadata: [
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: (action, payload) => {
+          calls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+        detectAgentInstallations: () => Promise.resolve(detectionResult),
+      },
+    });
+    harness.core.runtime.agentInstallationHints = detectionResult;
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+    harness.content.querySelector(".agent-cleanup-hint-remove").dispatchEvent({ type: "click", bubbles: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(calls[0][0], "uninstallAgentIntegration");
+    assert.strictEqual(calls[0][1].agentId, "qwen-code");
+    assert.strictEqual(calls[0][1].dismissInstallHint, false);
+
+    calls.length = 0;
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true });
+    harness.content.querySelector(".agent-cleanup-hint-dismiss").dispatchEvent({ type: "click", bubbles: false });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(calls[0][0], "dismissAgentCleanupHints");
+    assert.deepStrictEqual([...calls[0][1].agentIds], ["qwen-code"]);
   });
 
   it("keeps Agent management switch broadcasts in place even when Codex permission rows are mounted", () => {

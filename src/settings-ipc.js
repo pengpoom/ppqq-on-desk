@@ -2,6 +2,7 @@
 
 const defaultFs = require("fs");
 const defaultPath = require("path");
+const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
 const settingsThemeImporter = require("./settings-theme-importer");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
@@ -128,6 +129,7 @@ function registerSettingsIpc(options = {}) {
   const getTextScaleContext = options.getTextScaleContext
     || (() => ({ percent: 100 }));
   const getAllAgents = requiredDependency(options.getAllAgents, "getAllAgents");
+  const detectAgentInstallations = options.detectAgentInstallations || defaultDetectAgentInstallations;
   const checkForUpdates = options.checkForUpdates || (() => {});
   const getHardwareBuddyStatus = options.getHardwareBuddyStatus || (() => null);
   const testHardwareBuddyApproval = options.testHardwareBuddyApproval || (async () => ({
@@ -410,6 +412,20 @@ function registerSettingsIpc(options = {}) {
     } catch (err) {
       console.warn("Clawd: settings:list-agents failed:", err && err.message);
       return [];
+    }
+  });
+
+  handle("settings:detect-agent-installations", () => {
+    try {
+      return detectAgentInstallations({ fs, path, now });
+    } catch (err) {
+      console.warn("Clawd: settings:detect-agent-installations failed:", err && err.message);
+      return {
+        checkedAt: now(),
+        agents: [],
+        skippedAgentIds: [],
+        error: err && err.message ? err.message : String(err),
+      };
     }
   });
 

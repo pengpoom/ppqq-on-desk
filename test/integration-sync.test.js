@@ -8,6 +8,17 @@ const path = require("node:path");
 
 const { createIntegrationSyncRuntime } = require("../src/integration-sync");
 
+function withPatchedExport(modulePath, exportName, replacement, run) {
+  const moduleExports = require(modulePath);
+  const original = moduleExports[exportName];
+  moduleExports[exportName] = replacement;
+  try {
+    return run();
+  } finally {
+    moduleExports[exportName] = original;
+  }
+}
+
 function makeRuntime(overrides = {}) {
   const calls = [];
   const repairOptions = [];
@@ -145,6 +156,232 @@ describe("integration sync runtime", () => {
 
     assert.ok(result === true || (result && typeof result === "object"));
     assert.deepStrictEqual(calls.map((entry) => entry.name), ["copilot"]);
+  });
+
+  it("syncIntegrationForAgent treats count-style zero writes as a missing local integration", () => {
+    const cases = [
+      {
+        agentId: "gemini-cli",
+        ctxKey: "syncGeminiHooksImpl",
+        modulePath: "../hooks/gemini-install.js",
+        exportName: "registerGeminiHooks",
+        reason: "gemini-not-installed",
+      },
+      {
+        agentId: "cursor-agent",
+        ctxKey: "syncCursorHooksImpl",
+        modulePath: "../hooks/cursor-install.js",
+        exportName: "registerCursorHooks",
+        reason: "cursor-not-installed",
+      },
+      {
+        agentId: "copilot-cli",
+        ctxKey: "syncCopilotHooksImpl",
+        modulePath: "../hooks/copilot-install.js",
+        exportName: "registerCopilotHooks",
+        reason: "copilot-not-installed",
+      },
+      {
+        agentId: "codebuddy",
+        ctxKey: "syncCodeBuddyHooksImpl",
+        modulePath: "../hooks/codebuddy-install.js",
+        exportName: "registerCodeBuddyHooks",
+        reason: "codebuddy-not-installed",
+      },
+      {
+        agentId: "kiro-cli",
+        ctxKey: "syncKiroHooksImpl",
+        modulePath: "../hooks/kiro-install.js",
+        exportName: "registerKiroHooks",
+        reason: "kiro-not-installed",
+      },
+      {
+        agentId: "kimi-cli",
+        ctxKey: "syncKimiHooksImpl",
+        modulePath: "../hooks/kimi-install.js",
+        exportName: "registerKimiHooks",
+        reason: "kimi-not-installed",
+      },
+      {
+        agentId: "qwen-code",
+        ctxKey: "syncQwenHooksImpl",
+        modulePath: "../hooks/qwen-code-install.js",
+        exportName: "registerQwenCodeHooks",
+        reason: "qwen-not-installed",
+      },
+      {
+        agentId: "codex",
+        ctxKey: "syncCodexHooksImpl",
+        modulePath: "../hooks/codex-install.js",
+        exportName: "registerCodexHooks",
+        reason: "codex-not-installed",
+      },
+      {
+        agentId: "qoder",
+        ctxKey: "syncQoderHooksImpl",
+        modulePath: "../hooks/qoder-install.js",
+        exportName: "registerQoderHooks",
+        reason: "qoder-not-installed",
+      },
+    ];
+
+    for (const entry of cases) {
+      const missing = withPatchedExport(
+        entry.modulePath,
+        entry.exportName,
+        () => ({ added: 0, updated: 0, skipped: 0 }),
+        () => {
+          const { runtime } = makeRuntime({ ctx: { [entry.ctxKey]: undefined } });
+          return runtime.syncIntegrationForAgent(entry.agentId);
+        }
+      );
+      assert.strictEqual(missing.status, "skipped", entry.agentId);
+      assert.strictEqual(missing.reason, entry.reason, entry.agentId);
+
+      const alreadyCurrent = withPatchedExport(
+        entry.modulePath,
+        entry.exportName,
+        () => ({ added: 0, updated: 0, skipped: 1 }),
+        () => {
+          const { runtime } = makeRuntime({ ctx: { [entry.ctxKey]: undefined } });
+          return runtime.syncIntegrationForAgent(entry.agentId);
+        }
+      );
+      assert.strictEqual(alreadyCurrent.status, "ok", entry.agentId);
+      assert.strictEqual(alreadyCurrent.skipped, 1, entry.agentId);
+    }
+  });
+
+  it("syncIntegrationForAgent treats installed:false results as skipped", () => {
+    const cases = [
+      {
+        agentId: "antigravity-cli",
+        ctxKey: "syncAntigravityHooksImpl",
+        modulePath: "../hooks/antigravity-install.js",
+        exportName: "registerAntigravityHooks",
+        reason: "antigravity-not-installed",
+      },
+      {
+        agentId: "pi",
+        ctxKey: "syncPiExtensionImpl",
+        modulePath: "../hooks/pi-install.js",
+        exportName: "registerPiExtension",
+        reason: "pi-not-found",
+      },
+      {
+        agentId: "openclaw",
+        ctxKey: "syncOpenClawPluginImpl",
+        modulePath: "../hooks/openclaw-install.js",
+        exportName: "registerOpenClawPlugin",
+        reason: "openclaw-not-found",
+      },
+    ];
+
+    for (const entry of cases) {
+      const missing = withPatchedExport(
+        entry.modulePath,
+        entry.exportName,
+        () => ({ installed: false, skipped: true, updated: false, reason: entry.reason }),
+        () => {
+          const { runtime } = makeRuntime({ ctx: { [entry.ctxKey]: undefined } });
+          return runtime.syncIntegrationForAgent(entry.agentId);
+        }
+      );
+      assert.strictEqual(missing.status, "skipped", entry.agentId);
+      assert.strictEqual(missing.reason, entry.reason, entry.agentId);
+
+      const alreadyCurrent = withPatchedExport(
+        entry.modulePath,
+        entry.exportName,
+        () => ({ installed: true, skipped: true, updated: false }),
+        () => {
+          const { runtime } = makeRuntime({ ctx: { [entry.ctxKey]: undefined } });
+          return runtime.syncIntegrationForAgent(entry.agentId);
+        }
+      );
+      assert.strictEqual(alreadyCurrent.status, "ok", entry.agentId);
+      assert.strictEqual(alreadyCurrent.installed, true, entry.agentId);
+    }
+
+    const unmanagedPi = withPatchedExport(
+      "../hooks/pi-install.js",
+      "registerPiExtension",
+      () => ({
+        installed: false,
+        skipped: true,
+        updated: false,
+        reason: "unmanaged-existing-extension",
+      }),
+      () => {
+        const { runtime } = makeRuntime({ ctx: { syncPiExtensionImpl: undefined } });
+        return runtime.syncIntegrationForAgent("pi");
+      }
+    );
+    assert.strictEqual(unmanagedPi.status, "skipped");
+    assert.strictEqual(unmanagedPi.reason, "unmanaged-existing-extension");
+    assert.strictEqual(unmanagedPi.message, "Pi integration sync skipped: unmanaged-existing-extension");
+  });
+
+  it("syncIntegrationForAgent distinguishes opencode missing from already registered", () => {
+    const missing = withPatchedExport(
+      "../hooks/opencode-install.js",
+      "registerOpencodePlugin",
+      () => ({ added: false, skipped: true, created: false, reason: "opencode-not-found" }),
+      () => {
+        const { runtime } = makeRuntime({ ctx: { syncOpencodePluginImpl: undefined } });
+        return runtime.syncIntegrationForAgent("opencode");
+      }
+    );
+
+    assert.strictEqual(missing.status, "skipped");
+    assert.strictEqual(missing.reason, "opencode-not-found");
+
+    const alreadyCurrent = withPatchedExport(
+      "../hooks/opencode-install.js",
+      "registerOpencodePlugin",
+      () => ({ added: false, skipped: true, created: false }),
+      () => {
+        const { runtime } = makeRuntime({ ctx: { syncOpencodePluginImpl: undefined } });
+        return runtime.syncIntegrationForAgent("opencode");
+      }
+    );
+
+    assert.strictEqual(alreadyCurrent.status, "ok");
+    assert.strictEqual(alreadyCurrent.skipped, true);
+  });
+
+  it("syncIntegrationForAgent preserves Hermes not-installed skips", () => {
+    const { runtime } = makeRuntime({
+      ctx: {
+        syncHermesPluginImpl: undefined,
+        isHermesInstalledImpl: () => false,
+      },
+    });
+
+    const result = runtime.syncIntegrationForAgent("hermes");
+
+    assert.strictEqual(result.status, "skipped");
+    assert.strictEqual(result.reason, "hermes-not-installed");
+  });
+
+  it("repairIntegrationForAgent preserves skipped sync results", () => {
+    const { runtime } = makeRuntime({
+      ctx: {
+        syncGeminiHooksImpl: () => ({
+          status: "skipped",
+          reason: "gemini-not-installed",
+          message: "Gemini CLI missing",
+        }),
+      },
+    });
+
+    const result = runtime.repairIntegrationForAgent("gemini-cli");
+
+    assert.deepStrictEqual(result, {
+      status: "skipped",
+      reason: "gemini-not-installed",
+      message: "Gemini CLI missing",
+    });
   });
 
   it("uninstallIntegrationForAgent routes through the matching marker-scoped cleaner", () => {

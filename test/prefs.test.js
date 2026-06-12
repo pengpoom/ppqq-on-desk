@@ -521,6 +521,25 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, true);
   });
 
+  it("normalizes dismissed agent hint maps as true-only maps", () => {
+    const v = prefs.validate({
+      dismissedAgentInstallHints: {
+        "qwen-code": true,
+        hermes: false,
+        "": true,
+        pi: "yes",
+      },
+      dismissedAgentCleanupHints: {
+        "copilot-cli": true,
+        openclaw: false,
+        "": true,
+      },
+    });
+
+    assert.deepStrictEqual(v.dismissedAgentInstallHints, { "qwen-code": true });
+    assert.deepStrictEqual(v.dismissedAgentCleanupHints, { "copilot-cli": true });
+  });
+
   it("normalizes agents: fills missing Codex nativeNotificationSoundEnabled from defaults", () => {
     const v = prefs.validate({
       agents: {

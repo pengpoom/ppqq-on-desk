@@ -85,6 +85,10 @@
 
   const runtime = {
     agentMetadata: null,
+    agentInstallationHints: null,
+    agentInstallationHintsPending: false,
+    agentInstallationHintsFetched: false,
+    agentInstallationHintsPromise: null,
     themeList: null,
     codexPetsRefreshPending: false,
     codexPetZipImportPending: false,
@@ -877,6 +881,62 @@
     if (state.activeTab === "agents") requestRender({ content: true });
   }
 
+  function normalizeAgentInstallationHints(result) {
+    const source = result && typeof result === "object" ? result : {};
+    const normalized = {
+      checkedAt: Number.isFinite(source.checkedAt) ? source.checkedAt : null,
+      agents: Array.isArray(source.agents) ? source.agents : [],
+      skippedAgentIds: Array.isArray(source.skippedAgentIds) ? source.skippedAgentIds : [],
+    };
+    if (typeof source.error === "string" && source.error) normalized.error = source.error;
+    return normalized;
+  }
+
+  function emptyAgentInstallationHints(error) {
+    const result = {
+      checkedAt: null,
+      agents: [],
+      skippedAgentIds: [],
+    };
+    if (error) result.error = error;
+    return result;
+  }
+
+  function fetchAgentInstallationHints({ force = false } = {}) {
+    if (runtime.agentInstallationHintsPending) {
+      return runtime.agentInstallationHintsPromise || Promise.resolve(runtime.agentInstallationHints);
+    }
+    if (!force && runtime.agentInstallationHintsFetched) {
+      return Promise.resolve(runtime.agentInstallationHints);
+    }
+    if (!window.settingsAPI || typeof window.settingsAPI.detectAgentInstallations !== "function") {
+      runtime.agentInstallationHints = emptyAgentInstallationHints();
+      runtime.agentInstallationHintsFetched = true;
+      return Promise.resolve(runtime.agentInstallationHints);
+    }
+
+    runtime.agentInstallationHintsPending = true;
+    runtime.agentInstallationHintsPromise = window.settingsAPI.detectAgentInstallations()
+      .then((result) => {
+        runtime.agentInstallationHints = normalizeAgentInstallationHints(result);
+        return runtime.agentInstallationHints;
+      })
+      .catch((err) => {
+        console.warn("settings: detectAgentInstallations failed", err);
+        runtime.agentInstallationHints = emptyAgentInstallationHints(
+          err && err.message ? err.message : String(err)
+        );
+        return runtime.agentInstallationHints;
+      })
+      .finally(() => {
+        runtime.agentInstallationHintsPending = false;
+        runtime.agentInstallationHintsFetched = true;
+        runtime.agentInstallationHintsPromise = null;
+        if (state.activeTab === "agents") requestRender({ content: true });
+      });
+    return runtime.agentInstallationHintsPromise;
+  }
+
   function fetchThemes() {
     if (!window.settingsAPI || typeof window.settingsAPI.listThemes !== "function") {
       runtime.themeList = [];
@@ -1239,6 +1299,7 @@
     finishShortcutRecording,
     handleShortcutRecordKey,
     applyShortcutFailures,
+    fetchAgentInstallationHints,
     fetchThemes,
     fetchAnimationOverridesData,
     applyAnimationPreviewPoster,

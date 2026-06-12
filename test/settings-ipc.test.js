@@ -188,6 +188,7 @@ function createHarness(overrides = {}) {
     getSoundMuted: overrides.getSoundMuted || (() => false),
     getSoundVolume: overrides.getSoundVolume || (() => 0.4),
     getAllAgents: overrides.getAllAgents || (() => []),
+    detectAgentInstallations: overrides.detectAgentInstallations,
     getHardwareBuddyStatus: overrides.getHardwareBuddyStatus || (() => null),
     testHardwareBuddyApproval: overrides.testHardwareBuddyApproval,
     getQuickCommandPresets: overrides.getQuickCommandPresets,
@@ -206,6 +207,7 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:get-snapshot"));
   assert.ok(ipcMain.handlers.has("settings:pick-sound-file"));
   assert.ok(ipcMain.handlers.has("settings:list-themes"));
+  assert.ok(ipcMain.handlers.has("settings:detect-agent-installations"));
   assert.ok(ipcMain.handlers.has("settings:test-hardware-buddy-approval"));
   assert.ok(ipcMain.handlers.has("settings:get-quick-command-presets"));
   assert.ok(ipcMain.handlers.has("settings:send-quick-command"));
@@ -696,4 +698,31 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("settings IPC exposes read-only agent installation detection", async () => {
+  let sawFs = false;
+  let sawPath = false;
+  const { ipcMain, runtime } = createHarness({
+    now: () => 777,
+    detectAgentInstallations: (options) => {
+      sawFs = !!options.fs;
+      sawPath = !!options.path;
+      return {
+        checkedAt: options.now(),
+        agents: [{ agentId: "qwen-code", detectedInstalled: true }],
+        skippedAgentIds: ["claude-code", "codex"],
+      };
+    },
+  });
+
+  assert.deepStrictEqual(await ipcMain.invoke("settings:detect-agent-installations"), {
+    checkedAt: 777,
+    agents: [{ agentId: "qwen-code", detectedInstalled: true }],
+    skippedAgentIds: ["claude-code", "codex"],
+  });
+  assert.strictEqual(sawFs, true);
+  assert.strictEqual(sawPath, true);
+
+  runtime.dispose();
 });
