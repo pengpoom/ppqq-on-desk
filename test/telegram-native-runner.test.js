@@ -145,7 +145,7 @@ test("native runner requestApproval resolves allow for matching callback", async
     }],
   }));
   server.enqueueOk("answerCallbackQuery", true);
-  server.enqueueOk("editMessageReplyMarkup", { message_id: 99 });
+  server.enqueueOk("editMessageText", { message_id: 99 });
 
   const runner = createTelegramNativeRunner({
     tokenStore: tokenStore(),
@@ -169,7 +169,13 @@ test("native runner requestApproval resolves allow for matching callback", async
   const decision = await decisionPromise;
   assert.deepEqual(decision, { action: "allow" });
   assert.equal(server.calls.some((call) => call.method === "answerCallbackQuery"), true);
-  assert.equal(server.calls.some((call) => call.method === "editMessageReplyMarkup"), true);
+  const allowEdit = server.calls.find((call) => call.method === "editMessageText");
+  assert.ok(allowEdit, "tapping Allow rewrites the card body with the outcome");
+  assert.equal(
+    allowEdit.payload.text,
+    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Allowed",
+  );
+  assert.equal(allowEdit.payload.reply_markup, undefined);
   await runner.stop();
 });
 
@@ -202,7 +208,7 @@ test("native runner requestApproval renders suggestions and returns suggestion d
     }],
   }));
   server.enqueueOk("answerCallbackQuery", true);
-  server.enqueueOk("editMessageReplyMarkup", { message_id: 101 });
+  server.enqueueOk("editMessageText", { message_id: 101 });
 
   const runner = createTelegramNativeRunner({
     tokenStore: tokenStore(),
@@ -268,7 +274,7 @@ test("native runner rejects forged suggestion callbacks and waits for a valid de
   }));
   server.enqueueOk("answerCallbackQuery", true);
   server.enqueueOk("answerCallbackQuery", true);
-  server.enqueueOk("editMessageReplyMarkup", { message_id: 102 });
+  server.enqueueOk("editMessageText", { message_id: 102 });
 
   const runner = createTelegramNativeRunner({
     tokenStore: tokenStore(),
@@ -294,7 +300,12 @@ test("native runner rejects forged suggestion callbacks and waits for a valid de
   const callbackAnswers = server.calls.filter((call) => call.method === "answerCallbackQuery");
   assert.equal(callbackAnswers[0].payload.text, "Unavailable");
   assert.equal(callbackAnswers[1].payload.text, "Applied");
-  assert.equal(server.calls.filter((call) => call.method === "editMessageReplyMarkup").length, 1);
+  const edits = server.calls.filter((call) => call.method === "editMessageText");
+  assert.equal(edits.length, 1, "only the valid decision rewrites the card");
+  assert.equal(
+    edits[0].payload.text,
+    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Applied",
+  );
   await runner.stop();
 });
 
@@ -336,7 +347,7 @@ test("native runner requestApproval ignores wrong user and resolves later callba
   }));
   server.enqueueOk("answerCallbackQuery", true);
   server.enqueueOk("answerCallbackQuery", true);
-  server.enqueueOk("editMessageReplyMarkup", { message_id: 100 });
+  server.enqueueOk("editMessageText", { message_id: 100 });
 
   const runner = createTelegramNativeRunner({
     tokenStore: tokenStore(),
@@ -359,6 +370,12 @@ test("native runner requestApproval ignores wrong user and resolves later callba
   assert.equal(
     server.calls.filter((call) => call.method === "answerCallbackQuery").length,
     2,
+  );
+  const denyEdit = server.calls.find((call) => call.method === "editMessageText");
+  assert.ok(denyEdit, "tapping Deny rewrites the card body with the outcome");
+  assert.equal(
+    denyEdit.payload.text,
+    "claude-code requests Bash\n\nSummary: Run tests\n\n\u274C Denied",
   );
   await runner.stop();
 });

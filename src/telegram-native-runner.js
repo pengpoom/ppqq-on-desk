@@ -48,6 +48,15 @@ const APPROVAL_RESOLVED_ELSEWHERE_STATUS = Object.freeze({
   stopped: "\u23F9\uFE0F Session ended",
 });
 
+// Status lines for a decision taken on Telegram itself (a button tap). The
+// callback toast is instant but ephemeral; rewriting the card body leaves the
+// outcome in the chat history, symmetric with the resolved-elsewhere path.
+const APPROVAL_DECIDED_STATUS = Object.freeze({
+  allow: "\u2705 Allowed",
+  deny: "\u274C Denied",
+  suggestion: "\u2705 Applied",
+});
+
 function randomId() {
   return Math.random().toString(36).slice(2, 12);
 }
@@ -442,13 +451,8 @@ function createTelegramNativeRunner({
         text: decision.action === "allow" ? "Allowed" : (decision.action === "deny" ? "Denied" : "Applied"),
       });
     } catch {}
-    try {
-      await client.editMessageReplyMarkup({
-        chat_id: chatId,
-        message_id: entry.messageId || (cb.message && cb.message.message_id),
-        reply_markup: { inline_keyboard: [] },
-      });
-    } catch {}
+    const messageId = entry.messageId || (cb.message && cb.message.message_id);
+    await appendApprovalStatus(entry, APPROVAL_DECIDED_STATUS[decision.action], messageId);
     finishApproval(parsed.id, decision);
     return true;
   }
@@ -518,35 +522,30 @@ function createTelegramNativeRunner({
     }
   }
 
-  // Best-effort: strip the inline keyboard off an approval card whose decision
-  // landed somewhere other than this Telegram chat. Never throws.
-  function clearApprovalKeyboard(entry) {
-    if (!entry || !entry.messageId || !entry.chatId) return;
-    client.editMessageReplyMarkup({
-      chat_id: entry.chatId,
-      message_id: entry.messageId,
+  // Best-effort: strip the inline keyboard off an approval card. Never throws.
+  function stripApprovalKeyboard(chatId, messageId) {
+    if (!chatId || !messageId) return Promise.resolve();
+    return client.editMessageReplyMarkup({
+      chat_id: chatId,
+      message_id: messageId,
       reply_markup: { inline_keyboard: [] },
     }).catch(() => {});
   }
 
-  // Best-effort: rewrite an approval card whose decision landed somewhere
-  // other than this Telegram chat, appending a status line so the chat
-  // history shows the outcome. editMessageText without reply_markup also
-  // drops the inline keyboard; if the rewrite fails (deleted message, edit
-  // window expired, ...) fall back to stripping just the keyboard so the
-  // stale prompt still can't be tapped. Never throws.
-  function markApprovalResolvedElsewhere(entry, reason) {
-    if (!entry || !entry.messageId || !entry.chatId) return;
-    const status = APPROVAL_RESOLVED_ELSEWHERE_STATUS[reason];
-    if (!status || !entry.text) {
-      clearApprovalKeyboard(entry);
-      return;
-    }
-    client.editMessageText({
-      chat_id: entry.chatId,
-      message_id: entry.messageId,
+  // Best-effort: rewrite an approval card's body with a status line appended so
+  // the chat history shows the outcome. editMessageText without reply_markup
+  // also drops the inline keyboard; if the rewrite fails (deleted message, edit
+  // window expired, ...) — or there's no status/body to render — fall back to
+  // stripping just the keyboard so a stale prompt can't be tapped. Never throws.
+  function appendApprovalStatus(entry, status, messageId) {
+    const chatId = entry && entry.chatId;
+    if (!chatId || !messageId) return Promise.resolve();
+    if (!status || !entry.text) return stripApprovalKeyboard(chatId, messageId);
+    return client.editMessageText({
+      chat_id: chatId,
+      message_id: messageId,
       text: `${entry.text}\n\n${status}`,
-    }).catch(() => clearApprovalKeyboard(entry));
+    }).catch(() => stripApprovalKeyboard(chatId, messageId));
   }
 
   // `reason` has no default on purpose: a caller that forgets to pass one
@@ -567,7 +566,7 @@ function createTelegramNativeRunner({
     // polling stopped — leaving a still-clickable card that would later answer
     // "Expired". Rewrite it with the outcome (and without buttons) so the
     // stale prompt can't be tapped and the chat history shows what happened.
-    if (!normalized) markApprovalResolvedElsewhere(entry, reason);
+    if (!normalized) appendApprovalStatus(entry, APPROVAL_RESOLVED_ELSEWHERE_STATUS[reason], entry.messageId);
     entry.resolve(normalized);
   }
 
