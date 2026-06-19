@@ -46,7 +46,7 @@ describe("prefs.getDefaults", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
     assert.strictEqual(d.autoStartWithClaude, false);
-    assert.strictEqual(d.lowPowerIdleMode, true);
+    assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.disableMiniMode, false);
     assert.strictEqual(d.keepSizeAcrossDisplays, false);
@@ -197,7 +197,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.lang, d.lang);
     assert.strictEqual(v.soundMuted, false);
     assert.strictEqual(v.soundVolume, 1);
-    assert.strictEqual(v.lowPowerIdleMode, true);
+    assert.strictEqual(v.lowPowerIdleMode, false);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
     assert.strictEqual(v.sessionHudEnabled, true);

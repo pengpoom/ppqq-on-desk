@@ -189,7 +189,7 @@ const SCHEMA = {
     default: 5000,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
   },
-  lowPowerIdleMode: { type: "boolean", default: true },
+  lowPowerIdleMode: { type: "boolean", default: false },
   mobilePreviewEnabled: { type: "boolean", default: false },
   // When true, prevent the OS from sleeping while any agent task is in
   // progress (working/thinking/etc.); allow sleep again once tasks finish.
