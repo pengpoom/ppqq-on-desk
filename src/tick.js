@@ -24,7 +24,8 @@ let nextMainTickAt = 0;
 const FAST_TICK_MS = 50;
 const BOOST_TICK_MS = 100;
 const IDLE_TICK_MS = 250;
-const LOW_POWER_IDLE_TICK_MS = 5000;
+// Keep a low-rate cursor probe so new movement can leave the paused state.
+const LOW_POWER_IDLE_TICK_MS = 1000;
 const LOW_POWER_MINI_IDLE_TICK_MS = 2000;
 const REACTION_TICK_MS = 500;
 const BACKGROUND_TICK_MS = 750;
@@ -310,7 +311,7 @@ function runMainTickOnce() {
 
     const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW && !isMouseIdle) || miniIdleNow;
     if (!trackEyesNow) return nextDelay();
-    if (shouldSuppressPassiveIpc()) {
+    if (shouldSuppressPassiveIpc() && !moved) {
       if (ctx.forceEyeResend) ctx.forceEyeResend = false;
       return nextDelay();
     }
@@ -321,7 +322,7 @@ function runMainTickOnce() {
     if (!moved && !ctx.forceEyeResend) return nextDelay();
 
     // ── Eye position calculation (shared by idle and mini-idle) ──
-    const skipDedup = ctx.forceEyeResend;
+    const skipDedup = ctx.forceEyeResend || (ctx.lowPowerIdlePaused && moved);
     ctx.forceEyeResend = false;
 
     if (!bounds) {

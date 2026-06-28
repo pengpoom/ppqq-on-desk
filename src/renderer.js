@@ -9,6 +9,9 @@ let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
 const SWAP_LOAD_FALLBACK_MS = 3000;
 const SWAP_VISIBILITY_RESCUE_BUFFER_MS = 750;
+const EYE_ATTACH_RETRY_MS = 16;
+const EYE_ATTACH_MAX_ATTEMPTS = 60;
+const WAKE_OBJECT_RELOAD_RETRIES = 1;
 const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
 const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"]);
 const LOW_POWER_BOUNDARY_EPSILON_MS = 80;
@@ -16,6 +19,11 @@ const CLOUDLING_POINTER_BRIDGE_STATES = new Set(["idle", "mini-idle", "mini-peek
 let lowPowerIdleMode = false;
 let lowPowerIdlePauseTimer = null;
 let lowPowerSvgPaused = false;
+let lastSystemWakeId = null;
+let lastSystemWakeStatus = null;
+let pendingSystemWakeId = null;
+let queuedSystemWakePayload = null;
+let queuedSystemWakeReplayTimer = null;
 let _lowPowerStaticImageOverrides = {};
 
 // ── Theme config (injected via preload.js additionalArguments) ──
@@ -238,6 +246,16 @@ function resumeCurrentSvgForLowPower() {
   setLowPowerSvgPaused(false);
 }
 
+function hasLowPowerPauseStyle(root = getCurrentSvgRoot()) {
+  if (!root) return false;
+  try {
+    const svgDoc = root.ownerDocument;
+    return !!(svgDoc && svgDoc.getElementById(LOW_POWER_PAUSE_STYLE_ID));
+  } catch {
+    return false;
+  }
+}
+
 function scheduleLowPowerIdlePause() {
   if (lowPowerIdlePauseTimer) {
     clearTimeout(lowPowerIdlePauseTimer);
@@ -390,6 +408,7 @@ let _layerTargetDx = 0;           // raw dx from tick.js (scaled to _themeMaxOff
 let _layerTargetDy = 0;           // raw dy from tick.js
 let _layerAnimFrame = null;        // requestAnimationFrame handle
 let _layeredTrackingObj = null;    // the <object> element currently tracked (guard against re-init)
+let _layeredTrackingDocument = null;
 const LAYER_SETTLE_EPSILON = 0.02;
 
 initWithConfig(tc);
@@ -781,15 +800,26 @@ function forceImageChannelReload(file, state, allowImageFallback = true) {
   return true;
 }
 
+function cancelPendingSwap(reason = "superseded") {
+  const next = pendingNext;
+  if (!next) return false;
+  if (typeof next.__clawdSwapCancelled === "function") {
+    next.__clawdSwapCancelled(reason);
+  }
+  if (next.tagName === "OBJECT") releaseObject(next);
+  else releaseImg(next);
+  if (pendingNext === next) {
+    pendingNext = null;
+    pendingSvgFile = null;
+    pendingAssetUrl = null;
+  }
+  return true;
+}
+
 function swapToFile(file, state, useObjectChannel, options = {}) {
   const swapToken = ++activeSwapToken;
   const allowImageFallback = options.allowImageFallback !== false;
-  if (pendingNext) {
-    if (pendingNext.tagName === "OBJECT") releaseObject(pendingNext);
-    else releaseImg(pendingNext);
-    pendingNext = null;
-    pendingAssetUrl = null;
-  }
+  cancelPendingSwap();
 
   pendingSvgFile = file; // track what's loading for dedup
   const useObj = useObjectChannel !== undefined ? useObjectChannel : needsObjectChannel(state, file);
@@ -803,6 +833,20 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.id = "clawd";
     next.style.opacity = "0";
     applyObjectScaleStyle(next, file, state);
+    let swapCallbackSettled = false;
+    const finishSwapReady = () => {
+      if (swapCallbackSettled) return;
+      swapCallbackSettled = true;
+      next.__clawdSwapCancelled = null;
+      if (typeof options.onReady === "function") options.onReady(next);
+    };
+    const finishSwapError = (reason) => {
+      if (swapCallbackSettled) return;
+      swapCallbackSettled = true;
+      next.__clawdSwapCancelled = null;
+      if (typeof options.onError === "function") options.onError(reason);
+    };
+    next.__clawdSwapCancelled = finishSwapError;
 
     const swap = () => {
       if (pendingNext !== next) return;
@@ -840,6 +884,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
         callCloudlingPointerBridge(next, getDisplayedCloudlingPointerPayload(lastCloudlingPointerPayload));
       }
       scheduleLowPowerIdlePause();
+      finishSwapReady();
     };
 
     next.addEventListener("load", swap, { once: true });
@@ -859,10 +904,13 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       try {
         if (!next.contentDocument) {
           releaseObject(next);
-          pendingNext = null;
-          pendingSvgFile = null;
-          pendingAssetUrl = null;
-          forceImageChannelReload(file, state, allowImageFallback);
+          if (pendingNext === next) {
+            pendingNext = null;
+            pendingSvgFile = null;
+            pendingAssetUrl = null;
+          }
+          finishSwapError("object-document-unavailable");
+          if (!pendingNext) forceImageChannelReload(file, state, allowImageFallback);
           return;
         }
       } catch {}
@@ -986,13 +1034,7 @@ function renderStateFile(state, svg) {
   }
 
   // Different file — cancel pending, detach, and swap
-  if (pendingNext) {
-    if (pendingNext.tagName === "OBJECT") releaseObject(pendingNext);
-    else releaseImg(pendingNext);
-    pendingNext = null;
-    pendingSvgFile = null;
-    pendingAssetUrl = null;
-  }
+  cancelPendingSwap();
   detachEyeTracking();
 
   swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined);
@@ -1234,6 +1276,7 @@ function _cleanupLayeredTracking() {
   _layerTargetDx = 0;
   _layerTargetDy = 0;
   _layeredTrackingObj = null;
+  _layeredTrackingDocument = null;
 }
 
 // ── Attach / Detach (dispatches to correct system) ──
@@ -1252,7 +1295,7 @@ function attachEyeTracking(objectEl) {
     try {
       const svgDoc = objectEl.contentDocument;
       if (!svgDoc) {
-        if (attempt < 60) setTimeout(() => tryAttach(attempt + 1), 16);
+        if (attempt < EYE_ATTACH_MAX_ATTEMPTS) setTimeout(() => tryAttach(attempt + 1), EYE_ATTACH_RETRY_MS);
         return;
       }
 
@@ -1262,6 +1305,7 @@ function attachEyeTracking(objectEl) {
         if (_trackingLayers && _layeredTrackingObj === objectEl) return;
         _initLayeredTracking(svgDoc);
         _layeredTrackingObj = objectEl;
+        _layeredTrackingDocument = svgDoc;
         return;
       }
 
@@ -1279,11 +1323,11 @@ function attachEyeTracking(objectEl) {
       return;
     }
 
-    if (attempt >= 60) {
+    if (attempt >= EYE_ATTACH_MAX_ATTEMPTS) {
       console.warn("Timed out waiting for SVG eye targets");
       return;
     }
-    setTimeout(() => tryAttach(attempt + 1), 16);
+    setTimeout(() => tryAttach(attempt + 1), EYE_ATTACH_RETRY_MS);
   };
 
   tryAttach(0);
@@ -1299,13 +1343,191 @@ function detachEyeTracking() {
   _cleanupLayeredTracking();
 }
 
+function isEyeTrackingReady() {
+  if (!clawdEl || clawdEl.tagName !== "OBJECT" || !clawdEl.isConnected) return false;
+  let currentDocument = null;
+  try {
+    currentDocument = clawdEl.contentDocument;
+  } catch {
+    return false;
+  }
+  if (!currentDocument) return false;
+  if (_trackingLayers && _layeredTrackingObj === clawdEl) {
+    return _layeredTrackingDocument === currentDocument;
+  }
+  return !!(eyeTarget
+    && eyeTarget.ownerDocument === currentDocument
+    && eyeTarget.ownerDocument.defaultView);
+}
+
+function waitForWakeEyeTrackingReady(callback, attempt = 0) {
+  if (isEyeTrackingReady()) {
+    callback(true);
+    return;
+  }
+  if (attempt >= EYE_ATTACH_MAX_ATTEMPTS) {
+    callback(false);
+    return;
+  }
+  setTimeout(() => waitForWakeEyeTrackingReady(callback, attempt + 1), EYE_ATTACH_RETRY_MS);
+}
+
+function reportSystemWakeStatus(status) {
+  if (window.electronAPI && typeof window.electronAPI.reportSystemWakeStatus === "function") {
+    window.electronAPI.reportSystemWakeStatus(status);
+  }
+}
+
+function finishSystemWake(status) {
+  pendingSystemWakeId = null;
+  lastSystemWakeId = status.id;
+  lastSystemWakeStatus = status;
+  reportSystemWakeStatus(status);
+  if (queuedSystemWakePayload && !queuedSystemWakeReplayTimer) {
+    queuedSystemWakeReplayTimer = setTimeout(() => {
+      queuedSystemWakeReplayTimer = null;
+      const payload = queuedSystemWakePayload;
+      queuedSystemWakePayload = null;
+      if (payload) recoverFromSystemWake(payload);
+    }, 0);
+  }
+}
+
+function recoverFromSystemWake(payload) {
+  const id = payload && typeof payload.id === "string" ? payload.id : "";
+  if (!id || id.length > 96) return;
+  if (id === lastSystemWakeId && lastSystemWakeStatus) {
+    reportSystemWakeStatus(lastSystemWakeStatus);
+    return;
+  }
+  if (pendingSystemWakeId || queuedSystemWakeReplayTimer) {
+    if (id !== pendingSystemWakeId) queuedSystemWakePayload = payload;
+    return;
+  }
+
+  const rootBefore = getCurrentSvgRoot();
+  const lowPowerWasPaused = lowPowerSvgPaused || hasLowPowerPauseStyle(rootBefore);
+  const eyeTargetWasCurrentDocument = isEyeTrackingReady();
+
+  // Do this even when the local mirror says false: the injected pause style or
+  // the embedded SVG timeline can outlive that boolean across a system sleep.
+  resumeCurrentSvgForLowPower();
+  if (lowPowerIdleMode) scheduleLowPowerIdlePause();
+
+  const needsEyes = needsEyeTracking(currentState);
+  const shouldReloadEyeObject = lowPowerIdleMode
+    && needsEyes
+    && clawdEl
+    && clawdEl.tagName === "OBJECT"
+    && currentDisplayedSvg;
+
+  if (shouldReloadEyeObject) {
+    const wakeContext = {
+      id,
+      wakeState: currentState,
+      wakeSvg: currentDisplayedSvg,
+      lowPowerWasPaused,
+      pauseStyleRemoved: !hasLowPowerPauseStyle(),
+      eyeTargetWasCurrentDocument,
+    };
+
+    const finishWakeEyeObjectReload = (objectEl) => {
+      waitForWakeEyeTrackingReady((eyeTrackingReady) => {
+        if (pendingSystemWakeId !== wakeContext.id) return;
+        const stillCurrentWakeObject = clawdEl === objectEl
+          && currentDisplayedSvg === wakeContext.wakeSvg
+          && currentState === wakeContext.wakeState;
+        const ready = stillCurrentWakeObject && eyeTrackingReady;
+        finishSystemWake({
+          id: wakeContext.id,
+          result: ready ? "resumed" : "error",
+          lowPowerWasPaused: wakeContext.lowPowerWasPaused,
+          pauseStyleRemoved: wakeContext.pauseStyleRemoved,
+          eyeTrackingReady: ready,
+          eyeTargetWasCurrentDocument: wakeContext.eyeTargetWasCurrentDocument,
+          objectReloaded: stillCurrentWakeObject,
+          eyeTargetRebound: ready,
+        });
+      });
+    };
+
+    const failWakeEyeObjectReload = () => {
+      if (pendingSystemWakeId !== wakeContext.id) return;
+      if (clawdEl && clawdEl.tagName === "OBJECT" && clawdEl.isConnected) {
+        attachEyeTracking(clawdEl);
+      }
+      const eyeTrackingReady = isEyeTrackingReady();
+      finishSystemWake({
+        id: wakeContext.id,
+        result: "error",
+        lowPowerWasPaused: wakeContext.lowPowerWasPaused,
+        pauseStyleRemoved: wakeContext.pauseStyleRemoved,
+        eyeTrackingReady,
+        eyeTargetWasCurrentDocument: wakeContext.eyeTargetWasCurrentDocument,
+        objectReloaded: false,
+        eyeTargetRebound: !wakeContext.eyeTargetWasCurrentDocument && eyeTrackingReady,
+      });
+    };
+
+    const reloadWakeObject = (reloadAttempt = 0) => {
+      if (pendingSystemWakeId !== wakeContext.id) return;
+      if (currentState !== wakeContext.wakeState || currentDisplayedSvg !== wakeContext.wakeSvg) {
+        failWakeEyeObjectReload();
+        return;
+      }
+      swapToFile(wakeContext.wakeSvg, wakeContext.wakeState, true, {
+        allowImageFallback: false,
+        onReady: finishWakeEyeObjectReload,
+        onError: (reason) => {
+          if (pendingSystemWakeId !== wakeContext.id) return;
+          if (reason === "object-document-unavailable" && reloadAttempt < WAKE_OBJECT_RELOAD_RETRIES) {
+            reloadWakeObject(reloadAttempt + 1);
+            return;
+          }
+          failWakeEyeObjectReload();
+        },
+      });
+    };
+
+    pendingSystemWakeId = id;
+    detachEyeTracking();
+    reloadWakeObject();
+    return;
+  }
+
+  if (needsEyes && !isEyeTrackingReady() && clawdEl && clawdEl.tagName === "OBJECT") {
+    detachEyeTracking();
+    attachEyeTracking(clawdEl);
+  }
+
+  const status = {
+    id,
+    result: rootBefore ? "resumed" : "no-svg",
+    lowPowerWasPaused,
+    pauseStyleRemoved: !hasLowPowerPauseStyle(),
+    eyeTrackingReady: !needsEyes || isEyeTrackingReady(),
+    eyeTargetWasCurrentDocument,
+    objectReloaded: false,
+    eyeTargetRebound: needsEyes && !eyeTargetWasCurrentDocument && isEyeTrackingReady(),
+  };
+  finishSystemWake(status);
+}
+
 window.electronAPI.onEyeMove((dx, dy) => {
   const effectiveDx = miniLeftFlip ? -dx : dx;
   lastEyeDx = effectiveDx;
   lastEyeDy = dy;
 
+  if (lowPowerIdleMode) noteLowPowerActivity();
+
   if (shouldSuppressPassiveTrackingForLowPower()) {
     _cancelLayerAnimLoop();
+    return;
+  }
+
+  if ((eyeTarget || _trackingLayers) && !isEyeTrackingReady()) {
+    detachEyeTracking();
+    if (clawdEl && clawdEl.isConnected && clawdEl.tagName === "OBJECT") attachEyeTracking(clawdEl);
     return;
   }
 
@@ -1318,16 +1540,12 @@ window.electronAPI.onEyeMove((dx, dy) => {
   }
 
   // Single-target tracking (legacy)
-  // Detect stale eye targets (e.g. after DWM z-order recovery invalidates contentDocument)
-  if (eyeTarget && !eyeTarget.ownerDocument?.defaultView) {
-    eyeTarget = null;
-    bodyTarget = null;
-    shadowTarget = null;
-    if (clawdEl && clawdEl.isConnected && clawdEl.tagName === "OBJECT") attachEyeTracking(clawdEl);
-    return;
-  }
   applyEyeMove(effectiveDx, dy);
 });
+
+if (window.electronAPI && typeof window.electronAPI.onSystemWake === "function") {
+  window.electronAPI.onSystemWake(recoverFromSystemWake);
+}
 
 if (window.electronAPI && typeof window.electronAPI.onCloudlingPointer === "function") {
   window.electronAPI.onCloudlingPointer((payload) => {

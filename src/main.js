@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, clipboard } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard } = require("electron");
 // ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
 // Native Wayland ignores client-side window positioning and blocks global cursor
 // queries, so the pet spawns centered, can't be dragged, and has no tracking;
@@ -83,6 +83,8 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
+const { createSystemWakeRecovery } = require("./system-wake-recovery");
+const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
 const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
@@ -299,6 +301,7 @@ function _restartClawdNow() {
 let shortcutRuntime = null;
 let themeRuntime = null;
 let agentRuntime = null;
+let systemWakeRecovery = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
 let telegramApprovalSidecar = null;
@@ -1560,6 +1563,7 @@ const _tickCtx = {
   get dragLocked() { return petWindowRuntime.isDragLocked(); },
   get menuOpen() { return menuOpen; },
   get idlePaused() { return idlePaused; },
+  get lowPowerIdleMode() { return lowPowerIdleMode; },
   get lowPowerIdlePaused() { return lowPowerIdlePaused; },
   get isAnimating() { return _mini.getIsAnimating(); },
   get miniSleepPeeked() { return _mini.getMiniSleepPeeked(); },
@@ -1889,7 +1893,7 @@ function updateLog(msg) {
 function sessionLog(msg) {
   if (!sessionDebugLog) return;
   const { rotatedAppend } = require("./log-rotate");
-  rotatedAppend(sessionDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
+  rotatedAppend(sessionDebugLog, `[${formatLocalTimestamp()}] ${msg}\n`);
 }
 
 ipcMain.on("sound-playback-error", (_event, payload) => {
@@ -3809,6 +3813,23 @@ if (!gotTheLock) {
       console.warn("Clawd: migration controller init failed:", err && err.message);
     });
     createWindow();
+    systemWakeRecovery = createSystemWakeRecovery({
+      powerMonitor,
+      ipcMain,
+      sendToRenderer,
+      onRecovered: () => {
+        setLowPowerIdlePaused(false);
+        // The main mirror can already be false while the renderer still owns a
+        // paused SVG. Always resend the latest cursor position after receipt.
+        setForceEyeResend(true);
+      },
+      log: sessionLog,
+      onError: (err) => safeConsoleError(
+        "Clawd: system wake recovery failed:",
+        err && err.message ? err.message : err
+      ),
+    });
+    systemWakeRecovery.start();
     // macOS: bridge the OS app-hidden state (⌘H / Dock right-click → 隐藏) to the
     // pet. Pet windows are setCanHide:NO, so the OS marks the app hidden but the
     // windows refuse to vanish, and an inactive-app Dock Hide fires no
@@ -3875,6 +3896,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     isQuitting = true;
+    if (systemWakeRecovery) systemWakeRecovery.dispose();
     try { stopUpdateScheduler(); } catch {}
     releasePowerSaveBlocker();
     flushRuntimeStateToPrefs();

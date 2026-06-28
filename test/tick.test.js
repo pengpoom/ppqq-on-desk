@@ -321,18 +321,19 @@ describe("tick adaptive polling", () => {
     assert.ok(cursorCalls < 45, `expected fewer than 45 polls, got ${cursorCalls}`);
   });
 
-  it("uses a very low cursor polling rate while normal idle is low-power paused", () => {
+  it("uses a bounded one-second cursor probe while normal idle is low-power paused", () => {
     const theme = cloneTheme(_defaultTheme);
 
     ctx = makeCtx(theme, statesSeen);
+    ctx.lowPowerIdleMode = true;
     ctx.lowPowerIdlePaused = true;
     tickApi = loader.initTick(ctx);
     tickApi.startMainTick();
 
-    mock.timers.tick(10000);
+    for (let elapsed = 0; elapsed < 10000; elapsed += 100) mock.timers.tick(100);
 
-    assert.ok(cursorCalls > 0);
-    assert.ok(cursorCalls <= 3, `expected at most 3 polls in 10s while paused, got ${cursorCalls}`);
+    assert.ok(cursorCalls >= 9, `expected at least 9 polls in 10s while paused, got ${cursorCalls}`);
+    assert.ok(cursorCalls <= 11, `expected at most 11 polls in 10s while paused, got ${cursorCalls}`);
   });
 
   it("keeps non-paused idle polling materially above the low-power paused rate", () => {
@@ -403,11 +404,12 @@ describe("tick adaptive polling", () => {
     }
   });
 
-  it("suppresses passive eye-move IPC while low-power paused", () => {
+  it("forwards new mouse movement within one second while low-power paused", () => {
     const theme = cloneTheme(_defaultTheme);
     const eyeMoves = [];
 
     ctx = makeCtx(theme, statesSeen);
+    ctx.lowPowerIdleMode = true;
     ctx.lowPowerIdlePaused = true;
     ctx.sendToRenderer = (channel, ...args) => {
       if (channel === "eye-move") eyeMoves.push(args);
@@ -417,7 +419,47 @@ describe("tick adaptive polling", () => {
 
     mock.timers.tick(1);
     cursor = { x: 95, y: 70 };
-    mock.timers.tick(5000);
+    mock.timers.tick(1000);
+
+    assert.equal(eyeMoves.length, 1);
+  });
+
+  it("keeps eye-position dedup active before low-power pause engages", () => {
+    const theme = cloneTheme(_defaultTheme);
+    const eyeMoves = [];
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.lowPowerIdleMode = true;
+    ctx.lowPowerIdlePaused = false;
+    ctx.sendToRenderer = (channel, ...args) => {
+      if (channel === "eye-move") eyeMoves.push(args);
+    };
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    mock.timers.tick(1);
+    cursor = { x: 1000, y: 1000 };
+    mock.timers.tick(100);
+    cursor = { x: 1001, y: 1001 };
+    mock.timers.tick(100);
+
+    assert.equal(eyeMoves.length, 1);
+  });
+
+  it("keeps eye-move IPC suppressed while the mouse remains still in low-power pause", () => {
+    const theme = cloneTheme(_defaultTheme);
+    const eyeMoves = [];
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.lowPowerIdleMode = true;
+    ctx.lowPowerIdlePaused = true;
+    ctx.sendToRenderer = (channel, ...args) => {
+      if (channel === "eye-move") eyeMoves.push(args);
+    };
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    for (let elapsed = 0; elapsed < 5000; elapsed += 100) mock.timers.tick(100);
 
     assert.deepStrictEqual(eyeMoves, []);
   });
