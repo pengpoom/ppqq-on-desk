@@ -461,4 +461,43 @@ describe("roam module", () => {
     roam.tick();
     assert.ok(true, "tick should not throw when in roam state");
   });
+
+  it("falls back to the farthest work-area corner when every random target is too close", () => {
+    // Force all ROAM_TARGET_ATTEMPTS random picks to land on the pet's current
+    // position (dist 0 < ROAM_MIN_DIST), so target selection must use the
+    // four-corner fallback instead of returning null (the old flake).
+    // workArea 1000×1000, pet 120px, margin = round(1000*0.15) = 150 →
+    // xMin=150, xMax=1000-120-150=730. Math.random()=0.5 →
+    // targetX = 150 + floor(0.5*580) = 440, same for Y. Pet sits at (440,440)
+    // so every attempt has dist 0; the farthest corner is (xMin,yMin)=(150,150).
+    mock.method(Math, "random", () => 0.5);
+    const bounds = { x: 440, y: 440, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const ctx = makeCtx({
+      getPetWindowBounds() { return { ...bounds }; },
+      getNearestWorkArea() { return { x: 0, y: 0, width: 1000, height: 1000 }; },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x; realBounds.y = next.y;
+      realBounds.width = next.width; realBounds.height = next.height;
+    };
+    ctx.applyPetWindowPosition = (x, y) => {
+      bounds.x = x; bounds.y = y; realBounds.x = x; realBounds.y = y;
+    };
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000; i++) {
+      mock.timers.tick(16);
+      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+    }
+
+    // Fallback target was the farthest corner (150,150): the pet must have
+    // actually moved there, not stalled at its start (the old null-return bug).
+    assert.ok(Math.abs(realBounds.x - 150) < 5 && Math.abs(realBounds.y - 150) < 5,
+      `expected move to farthest corner (150,150), got (${realBounds.x},${realBounds.y})`);
+  });
 });
