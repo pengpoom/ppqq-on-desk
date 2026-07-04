@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "0.10.0",
+  "version": "0.10.1-ppqq.1",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -167,8 +167,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "rullerzhou-afk",
-        "repo": "clawd-on-desk"
+        "owner": "pengpoom",
+        "repo": "ppqq-on-desk"
       }
     ]
   },
