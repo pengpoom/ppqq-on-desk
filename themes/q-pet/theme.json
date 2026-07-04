@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "Q Pet",
   "author": "pet-forge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A q-pet Clawd on Desk theme using transparent animated WebP assets extracted from the approved spritesheet.",
   "viewBox": {
     "x": 0,
@@ -108,11 +108,11 @@
     }
   ],
   "timings": {
-    "idleAnimationInterval": 30000,
-    "mouseIdleTimeout": 20000,
-    "mouseSleepTimeout": 60000,
+    "idleAnimationInterval": 120000,
+    "mouseIdleTimeout": 120000,
+    "mouseSleepTimeout": 300000,
     "yawnDuration": 5400,
-    "deepSleepTimeout": 66000,
+    "deepSleepTimeout": 306000,
     "collapseDuration": 800,
     "wakeDuration": 1680
   },
