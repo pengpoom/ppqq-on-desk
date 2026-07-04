@@ -623,7 +623,9 @@ test("native runner appends timeout status when an approval expires", async () =
   await runner.start();
   await tick();
 
-  const decision = await runner.requestApproval({ title: "claude-code requests Bash", detail: "Summary: Run tests" });
+  const decisionPromise = runner.requestApproval({ title: "claude-code requests Bash", detail: "Summary: Run tests" });
+  await delay(15);
+  const decision = await decisionPromise;
   assert.equal(decision, null);
   await tick();
 
