@@ -430,6 +430,35 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("maps structured Codex turn_aborted errors to ApiError", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "turn_aborted",
+          error: { code: "rate_limit", message: "Rate limit reached." },
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      states.push(state);
+      if (state === "error") {
+        assert.deepStrictEqual(states, ["idle", "error"]);
+        assert.strictEqual(event, "ApiError");
+        assert.strictEqual(extra.failureKind, "api_error");
+        assert.strictEqual(extra.apiErrorType, "rate_limit");
+        assert.strictEqual(extra.errorPresent, true);
+        done();
+      }
+    });
+    monitor.start();
+  });
+
   it("should dedup repeated working states", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

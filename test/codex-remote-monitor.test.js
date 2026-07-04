@@ -133,6 +133,46 @@ describe("Codex remote monitor", () => {
     assert.strictEqual(posted.length, 1);
     assert.strictEqual(posted[0].state, "error");
     assert.strictEqual(posted[0].event, "ApiError");
+    assert.strictEqual(posted[0].failure_kind, "api_error");
+    assert.strictEqual(posted[0].api_error_type, "rate_limit");
+    assert.strictEqual(posted[0].error_present, true);
+  });
+
+  it("maps remote structured Codex turn_aborted errors to ApiError", () => {
+    const entry = {
+      sessionId: "codex:root",
+      cwd: "/repo",
+      isSubagent: false,
+      lastEventTime: 0,
+      lastState: null,
+    };
+    const posted = [];
+    const postState = (sessionId, state, event, cwd, isSubagent, extra) => {
+      posted.push(JSON.parse(__test.buildPostStateBody(
+        sessionId,
+        state,
+        event,
+        cwd,
+        isSubagent,
+        "remote-box",
+        extra
+      )));
+    };
+
+    __test.processLine(JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "turn_aborted",
+        error: { code: "rate_limit", message: "Rate limit reached." },
+      },
+    }), entry, { postState });
+
+    assert.strictEqual(posted.length, 1);
+    assert.strictEqual(posted[0].state, "error");
+    assert.strictEqual(posted[0].event, "ApiError");
+    assert.strictEqual(posted[0].failure_kind, "api_error");
+    assert.strictEqual(posted[0].api_error_type, "rate_limit");
+    assert.strictEqual(posted[0].error_present, true);
   });
 
   it("maps remote Codex non-zero tool output to error", () => {
@@ -167,6 +207,8 @@ describe("Codex remote monitor", () => {
     assert.strictEqual(posted.length, 1);
     assert.strictEqual(posted[0].state, "error");
     assert.strictEqual(posted[0].event, "PostToolUseFailure");
+    assert.strictEqual(posted[0].failure_kind, "tool_failure");
+    assert.strictEqual(posted[0].error_present, true);
   });
 
   it("marks subagent bodies headless and maps task_complete to idle", () => {

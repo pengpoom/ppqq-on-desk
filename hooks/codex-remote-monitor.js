@@ -104,6 +104,15 @@ function buildPostStateBody(sessionId, state, event, cwd, isSubagent, host, extr
     body.assistant_last_output = extra.assistantLastOutput;
     if (extra.assistantLastOutputTruncated === true) body.assistant_last_output_truncated = true;
   }
+  if (extra && typeof extra.failureKind === "string" && extra.failureKind) {
+    body.failure_kind = extra.failureKind;
+  }
+  if (extra && typeof extra.apiErrorType === "string" && extra.apiErrorType) {
+    body.api_error_type = extra.apiErrorType;
+  }
+  if (extra && extra.errorPresent === true) {
+    body.error_present = true;
+  }
   return JSON.stringify(body);
 }
 
@@ -151,7 +160,11 @@ function processLine(line, entry, options = {}) {
     entry.stale = false;
     entry.assistantLastOutput = null;
     entry.assistantLastOutputTruncated = false;
-    postStateFn(entry.sessionId, "error", "ApiError", entry.cwd, entry.isSubagent);
+    postStateFn(entry.sessionId, "error", "ApiError", entry.cwd, entry.isSubagent, {
+      failureKind: "api_error",
+      apiErrorType: apiError.api_error_type,
+      errorPresent: true,
+    });
     return;
   }
 
@@ -159,7 +172,10 @@ function processLine(line, entry, options = {}) {
     entry.lastState = "error";
     entry.lastEventTime = Date.now();
     entry.stale = false;
-    postStateFn(entry.sessionId, "error", "PostToolUseFailure", entry.cwd, entry.isSubagent);
+    postStateFn(entry.sessionId, "error", "PostToolUseFailure", entry.cwd, entry.isSubagent, {
+      failureKind: "tool_failure",
+      errorPresent: true,
+    });
     return;
   }
 

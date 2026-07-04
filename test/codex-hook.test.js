@@ -292,6 +292,34 @@ describe("Codex official hook", () => {
     });
   });
 
+  it("upgrades Codex Stop to ApiError for structured turn_aborted error objects", () => {
+    withTempTranscript([
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/repo" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "turn_aborted",
+          error: { code: "rate_limit", message: "Rate limit reached." },
+        },
+      }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
+    ], (transcriptPath) => {
+      const body = buildStateBody({
+        hook_event_name: "Stop",
+        session_id: "official-session",
+        transcript_path: transcriptPath,
+      }, mockResolve);
+
+      assert.strictEqual(body.event, "ApiError");
+      assert.strictEqual(body.state, "error");
+      assert.strictEqual(body.failure_kind, "api_error");
+      assert.strictEqual(body.api_error_type, "rate_limit");
+      assert.strictEqual(body.error_present, true);
+      assert.ok(!("assistant_last_output" in body));
+    });
+  });
+
   it("does not upgrade Codex Stop when an API error is from a previous turn", () => {
     withTempTranscript([
       JSON.stringify({ type: "session_meta", payload: { cwd: "/repo" } }),

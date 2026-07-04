@@ -17,6 +17,22 @@ const CODEX_API_ERROR_TYPES = new Set([
 const CODEX_API_ERROR_TEXT_RE =
   /^\s*(api\s+error|openai\s+api\s+error|request\s+failed|model\s+request\s+failed)\b/i;
 
+const STRUCTURED_ERROR_KEYS = [
+  "api_error_type",
+  "apiErrorType",
+  "error_type",
+  "errorType",
+  "error_code",
+  "errorCode",
+  "code",
+  "type",
+  "error",
+  "reason",
+  "status",
+  "message",
+  "description",
+];
+
 function normalizeCodexApiErrorType(value) {
   const text = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
   if (CODEX_API_ERROR_TYPES.has(text)) return text;
@@ -31,9 +47,23 @@ function normalizeCodexApiErrorType(value) {
   return "unknown";
 }
 
+function firstStringFromValue(value, depth = 0) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (!value || typeof value !== "object" || depth >= 3) return "";
+
+  for (const key of STRUCTURED_ERROR_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const found = firstStringFromValue(value[key], depth + 1);
+    if (found) return found;
+  }
+  return "";
+}
+
 function firstString(...values) {
   for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value.trim();
+    const found = firstStringFromValue(value);
+    if (found) return found;
   }
   return "";
 }
@@ -62,6 +92,16 @@ function recordHasStructuredErrorMetadata(record) {
     "error",
   ].some((key) => Object.prototype.hasOwnProperty.call(payload, key)
     || Object.prototype.hasOwnProperty.call(record || {}, key));
+}
+
+function recordHasApiErrorEventType(record) {
+  const payload = recordPayload(record);
+  const type = typeof payload.type === "string" ? payload.type.trim().toLowerCase() : "";
+  return type === "turn_aborted"
+    || type === "api_error"
+    || type === "error"
+    || type === "request_failed"
+    || type === "model_request_failed";
 }
 
 function structuredApiErrorCandidate(record) {
@@ -109,7 +149,7 @@ function recordLooksLikeCodexApiError(record) {
   const structured = structuredApiErrorCandidate(record);
   if (
     structured
-    && (payload.type === "turn_aborted" || recordHasStructuredErrorMetadata(record))
+    && (recordHasApiErrorEventType(record) || recordHasStructuredErrorMetadata(record))
   ) {
     return structured;
   }
