@@ -130,6 +130,32 @@ describe("tick sleepSequence mode", () => {
     for (const step of [50, 50, 50, 50, 50, 50, 50, 50, 50]) mock.timers.tick(step);
     assert.deepStrictEqual(statesSeen, ["yawning"]);
   });
+
+  it("plays periodic idle animations even while the cursor keeps moving", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.timings.idleAnimationInterval = 500;
+    theme.timings.mouseSleepTimeout = 5000;
+    theme.idleAnimations = [{ file: "idle-stand-sit.webp", duration: 1000 }];
+    const stateChanges = [];
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.sendToRenderer = (channel, ...args) => {
+      if (channel === "state-change") stateChanges.push(args);
+    };
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    for (let elapsed = 0; elapsed < 900; elapsed += 100) {
+      cursor = { x: 40 + elapsed / 100, y: 40 };
+      mock.timers.tick(100);
+    }
+
+    assert.ok(
+      stateChanges.some(([state, file]) => state === "idle" && file === "idle-stand-sit.webp"),
+      "expected periodic idle animation to play despite cursor movement"
+    );
+    assert.deepStrictEqual(statesSeen, []);
+  });
 });
 
 describe("tick mini hover", () => {

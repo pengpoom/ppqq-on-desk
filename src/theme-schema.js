@@ -21,6 +21,7 @@ const DEFAULT_TIMINGS = {
   deepSleepTimeout: 600000,
   mouseIdleTimeout: 20000,
   mouseSleepTimeout: 60000,
+  idleAnimationInterval: 0,
 };
 
 const DEFAULT_HITBOXES = {

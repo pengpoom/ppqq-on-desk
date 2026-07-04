@@ -38,14 +38,17 @@ const POINTER_BRIDGE_EPSILON = 0.001;
 let theme = null;
 let MOUSE_IDLE_TIMEOUT = 0;
 let MOUSE_SLEEP_TIMEOUT = 0;
+let IDLE_ANIMATION_INTERVAL = 0;
 let SVG_IDLE_FOLLOW = null;
 let IDLE_ANIMS = [];
 let SLEEP_MODE = "full";
+let nextIdleAnimationAt = 0;
 
 function refreshTheme() {
   theme = ctx.theme;
   MOUSE_IDLE_TIMEOUT = theme.timings.mouseIdleTimeout;
   MOUSE_SLEEP_TIMEOUT = theme.timings.mouseSleepTimeout;
+  IDLE_ANIMATION_INTERVAL = Math.max(0, Number(theme.timings.idleAnimationInterval) || 0);
   SVG_IDLE_FOLLOW = theme.states.idle[0];
   IDLE_ANIMS = (theme.idleAnimations || []).map(a => ({ svg: a.file, duration: a.duration }));
   SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
@@ -146,6 +149,33 @@ function shouldSuppressPassiveIpc() {
   return !!ctx.lowPowerIdlePaused && LOW_POWER_PAUSE_STATES.has(ctx.currentState);
 }
 
+function scheduleNextIdleAnimation(now = Date.now()) {
+  nextIdleAnimationAt = IDLE_ANIMATION_INTERVAL > 0 ? now + IDLE_ANIMATION_INTERVAL : 0;
+}
+
+function playIdleAnimation(pick) {
+  if (!pick || !pick.svg) return;
+  const duration = Math.max(0, Number(pick.duration) || 0);
+  isMouseIdle = true;
+  if (!shouldSuppressPassiveIpc()) ctx.sendToRenderer("eye-move", 0, 0);
+  setTimeout(() => {
+    if (isMouseIdle && ctx.currentState === "idle") {
+      ctx.sendToRenderer("state-change", "idle", pick.svg);
+      ctx.sendToHitWin("hit-state-sync", { currentSvg: pick.svg });
+    }
+  }, 250);
+  idleLookReturnTimer = setTimeout(() => {
+    idleLookReturnTimer = null;
+    if (isMouseIdle && ctx.currentState === "idle") {
+      isMouseIdle = false;
+      ctx.sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
+      ctx.sendToHitWin("hit-state-sync", { currentSvg: SVG_IDLE_FOLLOW });
+      setTimeout(() => { ctx.forceEyeResend = true; }, 200);
+      scheduleNextIdleAnimation();
+    }
+  }, 250 + duration);
+}
+
 function runMainTick() {
   mainTickTimer = null;
   nextMainTickAt = 0;
@@ -168,6 +198,7 @@ function runMainTickOnce() {
       lastCursorX = null;
       lastCursorY = null;
       mouseStillSince = Date.now();
+      scheduleNextIdleAnimation(mouseStillSince);
       lastEyeDx = 0;
       lastEyeDy = 0;
       if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
@@ -249,10 +280,12 @@ function runMainTickOnce() {
       if (moved) {
         mouseStillSince = Date.now();
         hasTriggeredYawn = false;
-        idleLookPlayed = false;
-        if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
+        if (IDLE_ANIMATION_INTERVAL <= 0) {
+          idleLookPlayed = false;
+          if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
+        }
         if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
-        if (isMouseIdle) {
+        if (isMouseIdle && IDLE_ANIMATION_INTERVAL <= 0) {
           isMouseIdle = false;
           ctx.sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
         }
@@ -281,27 +314,21 @@ function runMainTickOnce() {
         return nextDelay();
       }
 
+      if (IDLE_ANIMATION_INTERVAL > 0
+          && IDLE_ANIMS.length > 0
+          && !isMouseIdle
+          && !hasTriggeredYawn
+          && Date.now() >= nextIdleAnimationAt) {
+        const pick = IDLE_ANIMS[Math.floor(Math.random() * IDLE_ANIMS.length)];
+        playIdleAnimation(pick);
+        return nextDelay();
+      }
+
       // 20s no mouse movement → random idle animation (play once, then return to idle-follow)
-      if (IDLE_ANIMS.length > 0 && !isMouseIdle && !hasTriggeredYawn && !idleLookPlayed && elapsed >= MOUSE_IDLE_TIMEOUT) {
-        isMouseIdle = true;
+      if (IDLE_ANIMATION_INTERVAL <= 0 && IDLE_ANIMS.length > 0 && !isMouseIdle && !hasTriggeredYawn && !idleLookPlayed && elapsed >= MOUSE_IDLE_TIMEOUT) {
         idleLookPlayed = true;
         const pick = IDLE_ANIMS[Math.floor(Math.random() * IDLE_ANIMS.length)];
-        if (!shouldSuppressPassiveIpc()) ctx.sendToRenderer("eye-move", 0, 0);
-        setTimeout(() => {
-          if (isMouseIdle && ctx.currentState === "idle") {
-            ctx.sendToRenderer("state-change", "idle", pick.svg);
-            ctx.sendToHitWin("hit-state-sync", { currentSvg: pick.svg });
-          }
-        }, 250);
-        idleLookReturnTimer = setTimeout(() => {
-          idleLookReturnTimer = null;
-          if (isMouseIdle && ctx.currentState === "idle") {
-            isMouseIdle = false;
-            ctx.sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
-            ctx.sendToHitWin("hit-state-sync", { currentSvg: SVG_IDLE_FOLLOW });
-            setTimeout(() => { ctx.forceEyeResend = true; }, 200);
-          }
-        }, 250 + pick.duration);
+        playIdleAnimation(pick);
         return nextDelay();
       }
 
@@ -378,6 +405,7 @@ function cleanup() {
   isMouseIdle = false;
   hasTriggeredYawn = false;
   idleLookPlayed = false;
+  nextIdleAnimationAt = 0;
   idleWasActive = false;
   lastEyeDx = 0;
   lastEyeDy = 0;
