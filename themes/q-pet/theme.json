@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "Q Pet",
   "author": "pet-forge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A q-pet Clawd on Desk theme using transparent animated WebP assets extracted from the approved spritesheet.",
   "viewBox": {
     "x": 0,
@@ -101,6 +101,10 @@
     {
       "file": "idle-stand-sit.webp",
       "duration": 4380
+    },
+    {
+      "file": "idle_belly_pat_dynamic.webp",
+      "duration": 2400
     }
   ],
   "timings": {
