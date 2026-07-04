@@ -23,6 +23,10 @@ const {
   clampAssistantOutputText,
   extractAssistantTextFromRecord,
 } = require("./codex-assistant-output");
+const {
+  codexRecordHasToolFailure,
+  extractCodexApiErrorFromRecords,
+} = require("./codex-error-detection");
 
 // ── Inline config from agents/codex.js (zero-dependency requirement) ──
 
@@ -139,6 +143,26 @@ function processLine(line, entry, options = {}) {
     entry.assistantLastOutputTruncated = !!(assistantOutput && assistantOutput.truncated);
   }
 
+  const postStateFn = typeof options.postState === "function" ? options.postState : postState;
+  const apiError = extractCodexApiErrorFromRecords([obj]);
+  if (apiError) {
+    entry.lastState = "error";
+    entry.lastEventTime = Date.now();
+    entry.stale = false;
+    entry.assistantLastOutput = null;
+    entry.assistantLastOutputTruncated = false;
+    postStateFn(entry.sessionId, "error", "ApiError", entry.cwd, entry.isSubagent);
+    return;
+  }
+
+  if (codexRecordHasToolFailure(obj)) {
+    entry.lastState = "error";
+    entry.lastEventTime = Date.now();
+    entry.stale = false;
+    postStateFn(entry.sessionId, "error", "PostToolUseFailure", entry.cwd, entry.isSubagent);
+    return;
+  }
+
   const state = LOG_EVENT_MAP[key];
   if (state === undefined || state === null) return;
   const finalState = entry.isSubagent && state === "attention" ? "idle" : state;
@@ -159,7 +183,6 @@ function processLine(line, entry, options = {}) {
   // one-shot "sleeping" post in cleanStaleFiles.
   entry.stale = false;
 
-  const postStateFn = typeof options.postState === "function" ? options.postState : postState;
   const extra = key === "event_msg:task_complete" && entry.assistantLastOutput
     ? {
       assistantLastOutput: entry.assistantLastOutput,

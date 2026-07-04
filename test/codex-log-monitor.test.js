@@ -372,6 +372,64 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("maps Codex function_call_output non-zero exit to error", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"exec_command"}}',
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-1",
+          output: "Chunk ID: test\\nWall time: 0.0000 seconds\\nProcess exited with code 127\\nOutput:\\nzsh:1: command not found: gofmt\\n",
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event) => {
+      events.push({ state, event });
+      if (state === "error") {
+        assert.deepStrictEqual(events.map((entry) => entry.state), ["idle", "thinking", "working", "error"]);
+        assert.strictEqual(event, "PostToolUseFailure");
+        done();
+      }
+    });
+    monitor.start();
+  });
+
+  it("maps Codex API error transcript records to error", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          isApiErrorMessage: true,
+          error: "rate_limit",
+          content: [{ type: "output_text", text: "API Error: rate_limit" }],
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event) => {
+      states.push(state);
+      if (state === "error") {
+        assert.deepStrictEqual(states, ["idle", "error"]);
+        assert.strictEqual(event, "ApiError");
+        done();
+      }
+    });
+    monitor.start();
+  });
+
   it("should dedup repeated working states", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

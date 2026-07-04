@@ -19,7 +19,11 @@ const {
 } = require("./codex-subagent-fields");
 const {
   extractLastAssistantTextFromTranscript,
+  readCodexTranscriptTailRecords,
 } = require("./codex-assistant-output");
+const {
+  extractCodexApiErrorFromRecords,
+} = require("./codex-error-detection");
 const { readCodexThreadName } = require("./codex-session-index");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 
@@ -36,9 +40,12 @@ const EVENT_TO_STATE = {
   UserPromptSubmit: "thinking",
   PreToolUse: "working",
   PostToolUse: "working",
+  PostToolUseFailure: "error",
   // Placeholder: server.js resolves official Codex Stop to attention/idle
   // using the per-turn tool-use map it owns.
   Stop: "idle",
+  StopFailure: "error",
+  ApiError: "error",
 };
 
 function getCodexPermissionTimeoutMs() {
@@ -351,11 +358,32 @@ function buildStateBody(payload, resolve) {
     body.stop_hook_active = payload.stop_hook_active;
   }
   if (event === "Stop") {
-    const assistantOutput = extractLastAssistantTextFromTranscript(payload.transcript_path);
-    if (assistantOutput && assistantOutput.text) {
-      body.assistant_last_output = assistantOutput.text;
-      if (assistantOutput.truncated) body.assistant_last_output_truncated = true;
+    const transcriptRecords = readCodexTranscriptTailRecords(payload.transcript_path);
+    const apiError = extractCodexApiErrorFromRecords(transcriptRecords);
+    if (apiError) {
+      body.event = "ApiError";
+      body.state = "error";
+      body.failure_kind = "api_error";
+      body.api_error_type = apiError.api_error_type;
+      body.error_present = true;
+    } else {
+      const assistantOutput = extractLastAssistantTextFromTranscript(payload.transcript_path);
+      if (assistantOutput && assistantOutput.text) {
+        body.assistant_last_output = assistantOutput.text;
+        if (assistantOutput.truncated) body.assistant_last_output_truncated = true;
+      }
     }
+  }
+  if (event === "PostToolUseFailure" || event === "StopFailure") {
+    body.failure_kind = event === "PostToolUseFailure" ? "tool_failure" : "stop_failure";
+    body.error_present = true;
+  }
+  if (event === "ApiError") {
+    body.failure_kind = "api_error";
+    body.api_error_type = typeof payload.api_error_type === "string"
+      ? payload.api_error_type
+      : "unknown";
+    body.error_present = true;
   }
 
   const sessionMeta = readFirstSessionMeta(payload.transcript_path);

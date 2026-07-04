@@ -60,6 +60,11 @@ function resolveCodexOfficialHookState(data, requestedState, turns, classifier =
     return { state: requestedState, drop: true, ...headless };
   }
 
+  if (event === "ApiError" || event === "StopFailure") {
+    if (turnKey && turns) turns.delete(turnKey);
+    return { state: requestedState, drop: false, ...headless };
+  }
+
   if (turnKey && turns) {
     if (event === "UserPromptSubmit") {
       turns.set(turnKey, { sessionId, hadToolUse: false });

@@ -54,6 +54,19 @@ function withTempCodexIndex(lines, fn) {
   }
 }
 
+function makeCodexApiErrorRecord({ error = "rate_limit", message = "API Error: rate_limit" } = {}) {
+  return {
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "assistant",
+      isApiErrorMessage: true,
+      error,
+      content: [{ type: "output_text", text: message }],
+    },
+  };
+}
+
 describe("Codex official hook", () => {
   it("normalizes session ids with the codex prefix", () => {
     assert.strictEqual(normalizeCodexSessionId("abc"), "codex:abc");
@@ -255,6 +268,71 @@ describe("Codex official hook", () => {
       assert.strictEqual(body.assistant_last_output, "All done.\nReady to ship.");
       assert.ok(!("assistant_last_output_truncated" in body));
     });
+  });
+
+  it("upgrades Codex Stop to ApiError when transcript tail has a current API error", () => {
+    withTempTranscript([
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/repo" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify(makeCodexApiErrorRecord({ error: "rate_limit" })),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
+    ], (transcriptPath) => {
+      const body = buildStateBody({
+        hook_event_name: "Stop",
+        session_id: "official-session",
+        transcript_path: transcriptPath,
+      }, mockResolve);
+
+      assert.strictEqual(body.event, "ApiError");
+      assert.strictEqual(body.state, "error");
+      assert.strictEqual(body.failure_kind, "api_error");
+      assert.strictEqual(body.api_error_type, "rate_limit");
+      assert.strictEqual(body.error_present, true);
+      assert.ok(!("assistant_last_output" in body));
+    });
+  });
+
+  it("does not upgrade Codex Stop when an API error is from a previous turn", () => {
+    withTempTranscript([
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/repo" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify(makeCodexApiErrorRecord({ error: "server_error" })),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "next prompt" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "Recovered." } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
+    ], (transcriptPath) => {
+      const body = buildStateBody({
+        hook_event_name: "Stop",
+        session_id: "official-session",
+        transcript_path: transcriptPath,
+      }, mockResolve);
+
+      assert.strictEqual(body.event, "Stop");
+      assert.strictEqual(body.state, "idle");
+      assert.strictEqual(body.assistant_last_output, "Recovered.");
+      assert.ok(!("api_error_type" in body));
+    });
+  });
+
+  it("builds direct Codex failure hook payloads as error", () => {
+    const toolBody = buildStateBody({
+      hook_event_name: "PostToolUseFailure",
+      session_id: "s1",
+      tool_name: "exec_command",
+    }, mockResolve);
+    const stopBody = buildStateBody({
+      hook_event_name: "StopFailure",
+      session_id: "s1",
+    }, mockResolve);
+
+    assert.strictEqual(toolBody.state, "error");
+    assert.strictEqual(toolBody.event, "PostToolUseFailure");
+    assert.strictEqual(toolBody.failure_kind, "tool_failure");
+    assert.strictEqual(toolBody.error_present, true);
+    assert.strictEqual(stopBody.state, "error");
+    assert.strictEqual(stopBody.event, "StopFailure");
+    assert.strictEqual(stopBody.failure_kind, "stop_failure");
+    assert.strictEqual(stopBody.error_present, true);
   });
 
   it("does not carry a previous Codex turn output across a new task_started boundary", () => {

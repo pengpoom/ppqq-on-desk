@@ -13,7 +13,10 @@ module.exports = {
     PreToolUse: "working",
     PermissionRequest: "notification",
     PostToolUse: "working",
+    PostToolUseFailure: "error",
     Stop: "codex-turn-end",
+    StopFailure: "error",
+    ApiError: "error",
   },
   // JSONL record type:subtype → pet state mapping. The remote monitor keeps
   // a zero-dep subset of this table; update both paths when adding shared

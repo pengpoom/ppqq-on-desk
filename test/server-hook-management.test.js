@@ -560,6 +560,29 @@ describe("Codex official hook turn tracking", () => {
     assert.strictEqual(turns.size, 0);
   });
 
+  it("keeps Codex ApiError as error and clears the tracked turn", () => {
+    const turns = new Map();
+    resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "thinking", turns);
+    assert.strictEqual(turns.size, 1);
+
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "ApiError",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "error", turns);
+
+    assert.deepStrictEqual(result, { state: "error", drop: false });
+    assert.strictEqual(turns.size, 0);
+  });
+
   it("resolves subagent Stop to idle and marks it headless", () => {
     const turns = new Map();
     const classifier = {

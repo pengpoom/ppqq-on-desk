@@ -98,6 +98,77 @@ describe("Codex remote monitor", () => {
     assert.strictEqual(complete.assistant_last_output, "Remote Codex answer");
   });
 
+  it("maps remote Codex API error records to error", () => {
+    const entry = {
+      sessionId: "codex:root",
+      cwd: "/repo",
+      isSubagent: false,
+      lastEventTime: 0,
+      lastState: null,
+    };
+    const posted = [];
+    const postState = (sessionId, state, event, cwd, isSubagent, extra) => {
+      posted.push(JSON.parse(__test.buildPostStateBody(
+        sessionId,
+        state,
+        event,
+        cwd,
+        isSubagent,
+        "remote-box",
+        extra
+      )));
+    };
+
+    __test.processLine(JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        isApiErrorMessage: true,
+        error: "rate_limit",
+        content: [{ type: "output_text", text: "API Error: rate_limit" }],
+      },
+    }), entry, { postState });
+
+    assert.strictEqual(posted.length, 1);
+    assert.strictEqual(posted[0].state, "error");
+    assert.strictEqual(posted[0].event, "ApiError");
+  });
+
+  it("maps remote Codex non-zero tool output to error", () => {
+    const entry = {
+      sessionId: "codex:root",
+      cwd: "/repo",
+      isSubagent: false,
+      lastEventTime: 0,
+      lastState: null,
+    };
+    const posted = [];
+    const postState = (sessionId, state, event, cwd, isSubagent, extra) => {
+      posted.push(JSON.parse(__test.buildPostStateBody(
+        sessionId,
+        state,
+        event,
+        cwd,
+        isSubagent,
+        "remote-box",
+        extra
+      )));
+    };
+
+    __test.processLine(JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        output: "Chunk ID: test\nWall time: 0.0000 seconds\nProcess exited with code 1\nOutput:\nboom\n",
+      },
+    }), entry, { postState });
+
+    assert.strictEqual(posted.length, 1);
+    assert.strictEqual(posted[0].state, "error");
+    assert.strictEqual(posted[0].event, "PostToolUseFailure");
+  });
+
   it("marks subagent bodies headless and maps task_complete to idle", () => {
     const entry = {
       sessionId: "codex:sub",

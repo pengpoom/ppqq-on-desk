@@ -23,6 +23,10 @@ const {
   clampAssistantOutputText,
   extractAssistantTextFromRecord,
 } = require("../hooks/codex-assistant-output");
+const {
+  codexRecordHasToolFailure,
+  extractCodexApiErrorFromRecords,
+} = require("../hooks/codex-error-detection");
 
 const APPROVAL_HEURISTIC_MS = 2000;
 const MAX_TRACKED_FILES = 50;
@@ -436,6 +440,34 @@ class CodexLogMonitor {
       const assistantOutput = clampAssistantOutputText(assistantText);
       tracked.assistantLastOutput = assistantOutput ? assistantOutput.text : null;
       tracked.assistantLastOutputTruncated = !!(assistantOutput && assistantOutput.truncated);
+    }
+
+    const apiError = extractCodexApiErrorFromRecords([obj]);
+    if (apiError) {
+      tracked.hadToolUse = false;
+      tracked.assistantLastOutput = null;
+      tracked.assistantLastOutputTruncated = false;
+      tracked.lastStateEvent = "event_msg:api_error";
+      tracked.lastState = "error";
+      if (tracked.backfilling) return;
+      this._emitStateChange(tracked, "error", "ApiError", {
+        failureKind: "api_error",
+        apiErrorType: apiError.api_error_type,
+        errorPresent: true,
+      });
+      return;
+    }
+
+    if (codexRecordHasToolFailure(obj)) {
+      tracked.hadToolUse = false;
+      tracked.lastStateEvent = "PostToolUseFailure";
+      tracked.lastState = "error";
+      if (tracked.backfilling) return;
+      this._emitStateChange(tracked, "error", "PostToolUseFailure", {
+        failureKind: "tool_failure",
+        errorPresent: true,
+      });
+      return;
     }
 
     if (key === "event_msg:token_count") {
