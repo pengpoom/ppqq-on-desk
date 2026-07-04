@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "name": "Q Pet",
+  "author": "pet-forge",
+  "version": "0.1.0",
+  "description": "A q-pet Clawd on Desk theme using transparent animated WebP assets extracted from the approved spritesheet.",
+  "viewBox": {
+    "x": 0,
+    "y": 0,
+    "width": 192,
+    "height": 208
+  },
+  "layout": {
+    "contentBox": {
+      "x": 34,
+      "y": 5,
+      "width": 124,
+      "height": 198
+    },
+    "centerX": 96,
+    "baselineY": 203,
+    "visibleHeightRatio": 0.95,
+    "baselineBottomRatio": 0.02
+  },
+  "eyeTracking": {
+    "enabled": false,
+    "states": []
+  },
+  "states": {
+    "idle": [
+      "idle-static.webp"
+    ],
+    "yawning": [
+      "stand_to_sleep_dynamic.webp"
+    ],
+    "dozing": [
+      "sleeping.webp"
+    ],
+    "collapsing": [
+      "sleeping.webp"
+    ],
+    "thinking": [
+      "thinking.webp"
+    ],
+    "working": [
+      "typing.webp"
+    ],
+    "juggling": [
+      "juggling.webp"
+    ],
+    "error": [
+      "error.webp"
+    ],
+    "attention": [
+      "attention.webp"
+    ],
+    "notification": [
+      "notification.webp"
+    ],
+    "sleeping": [
+      "sleeping.webp"
+    ],
+    "waking": [
+      "waking.webp"
+    ],
+    "sweeping": [
+      "sweeping.webp"
+    ],
+    "carrying": [
+      "carrying.webp"
+    ]
+  },
+  "sleepSequence": {
+    "mode": "full"
+  },
+  "workingTiers": [
+    {
+      "minSessions": 3,
+      "file": "typing.webp"
+    },
+    {
+      "minSessions": 2,
+      "file": "typing.webp"
+    },
+    {
+      "minSessions": 1,
+      "file": "typing.webp"
+    }
+  ],
+  "jugglingTiers": [
+    {
+      "minSessions": 2,
+      "file": "juggling.webp"
+    },
+    {
+      "minSessions": 1,
+      "file": "juggling.webp"
+    }
+  ],
+  "idleAnimations": [
+    {
+      "file": "idle-stand-sit.webp",
+      "duration": 4380
+    }
+  ],
+  "timings": {
+    "idleAnimationInterval": 30000,
+    "mouseIdleTimeout": 20000,
+    "mouseSleepTimeout": 60000,
+    "yawnDuration": 5400,
+    "deepSleepTimeout": 66000,
+    "collapseDuration": 800,
+    "wakeDuration": 1680
+  },
+  "hitBoxes": {
+    "default": {
+      "x": 34,
+      "y": 20,
+      "w": 124,
+      "h": 178
+    },
+    "sleeping": {
+      "x": 12,
+      "y": 94,
+      "w": 168,
+      "h": 104
+    }
+  },
+  "fileHitBoxes": {
+    "stand_to_sleep_dynamic.webp": {
+      "x": 12,
+      "y": 5,
+      "w": 168,
+      "h": 198
+    },
+    "waking.webp": {
+      "x": 12,
+      "y": 5,
+      "w": 168,
+      "h": 198
+    }
+  },
+  "sleepingHitboxFiles": [
+    "sleeping.webp"
+  ],
+  "reactions": {
+    "drag": {
+      "file": "jumping.webp",
+      "fileLeft": "running-left.webp",
+      "fileRight": "running-right.webp"
+    },
+    "clickLeft": {
+      "file": "jumping.webp",
+      "duration": 2500
+    },
+    "clickRight": {
+      "file": "jumping.webp",
+      "duration": 2500
+    },
+    "double": {
+      "files": [
+        "waving.webp"
+      ],
+      "duration": 3500
+    }
+  },
+  "miniMode": {
+    "supported": false
+  },
+  "objectScale": {
+    "widthRatio": 1.15,
+    "heightRatio": 1.15,
+    "offsetX": 0,
+    "offsetY": 0
+  }
+}
